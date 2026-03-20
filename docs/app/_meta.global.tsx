@@ -139,7 +139,7 @@ export default {
         title: 'More'
       },
       'about-link': {
-        title: 'About Nextra',
+        title: 'About Rexplore',
         href: '/about'
       },
       'next.js-link': {
@@ -155,19 +155,10 @@ export default {
   api: {
     type: 'page'
   },
-  versions: {
-    type: 'menu',
-    title: 'Versions',
-    items: {
-      _3: {
-        title: 'Nextra v3 Docs',
-        href: 'https://nextra-v2-7hslbun8z-shud.vercel.app'
-      },
-      _2: {
-        title: 'Nextra v2 Docs',
-        href: 'https://nextra-v2-oe0zrpzjp-shud.vercel.app'
-      }
-    }
+  github: {
+    type: 'page',
+    title: 'GitHub',
+    href: 'https://github.com/rexplore'
   },
   blog: {
     type: 'page',
