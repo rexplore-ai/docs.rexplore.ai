@@ -1,0 +1,236 @@
+---
+title: AI Voice Agent
+description:
+  Wire Deepgram (STT) + OpenAI (LLM) + ElevenLabs (TTS) into Voxtra and
+  let your call handler hold a conversation. Includes barge-in, tool
+  calls, and conversation history.
+---
+
+import { Callout, Steps } from 'nextra/components'
+
+# AI Voice Agent
+
+This guide builds a fully-functional AI voice agent on top of Voxtra:
+the caller talks, an LLM responds, the response is spoken back, and the
+agent handles barge-in (when the caller talks over the agent).
+
+## Install the providers
+
+```bash
+pip install "voxtra[deepgram,openai,elevenlabs]"
+```
+
+Each extra is optional — you can mix and match based on what you have
+keys for. Other providers register via the
+[provider registry](/voxtra/concepts/architecture).
+
+## Wire it up
+
+```python filename="agent.py"
+from voxtra import VoxtraApp
+from voxtra.ai.stt.deepgram import DeepgramSTT
+from voxtra.ai.tts.elevenlabs import ElevenLabsTTS
+from voxtra.ai.llm.openai import OpenAIAgent
+from voxtra.ai.vad import EnergyVAD
+
+app = VoxtraApp(
+    ari_url="http://pbx:8088",
+    ari_user="asterisk",
+    ari_password="secret",
+
+    stt=DeepgramSTT(api_key="dg-..."),
+    llm=OpenAIAgent(
+        api_key="sk-...",
+        model="gpt-4o-mini",
+        system_prompt="You are a helpful customer-support agent for Acme.",
+    ),
+    tts=ElevenLabsTTS(api_key="el-...", voice_id="..."),
+    vad=EnergyVAD(),
+)
+
+@app.default()
+async def handle(call):
+    await call.answer()
+    await call.say("Thanks for calling Acme. How can I help?")
+
+    while call.state == "in-progress":
+        user = await call.listen(timeout=10)
+        if user is None:
+            await call.say("Are you still there?")
+            continue
+
+        reply = await call.agent.respond(user.text)
+        await call.say(reply.text)
+
+        if reply.tool_calls and any(t["name"] == "end_call" for t in reply.tool_calls):
+            await call.say("Thanks. Goodbye.")
+            await call.hangup()
+            return
+
+app.run()
+```
+
+That's the whole thing. Voxtra auto-wires a `VoicePipeline` per session
+when STT + LLM + TTS are all configured — you don't construct the
+pipeline yourself.
+
+## How `say` and `listen` work
+
+Under the hood:
+
+- `call.say(text)` runs the configured TTS and sends the resulting
+  audio frames through the AudioSocket connection. It awaits the
+  `AGENT_SPEECH_ENDED` event before returning.
+
+- `call.listen(timeout=)` awaits a `USER_TRANSCRIPT` event from the
+  pipeline. `None` is returned on timeout. Partial transcripts (which
+  fire as the user speaks) are filtered out — you only see finals.
+
+- `call.agent.respond(text)` calls the LLM with the running conversation
+  history. The history persists for the lifetime of the `CallSession`.
+
+## Conversation history
+
+`call.agent` keeps state for you:
+
+```python
+await call.agent.respond("My name is Patrick.")
+# ... later in the same call ...
+reply = await call.agent.respond("What's my name?")
+# reply.text → "Your name is Patrick."
+```
+
+To inspect or seed history manually:
+
+```python
+call.agent.history                           # list[dict]
+call.agent.history.append({"role": "system", "content": "..."})
+```
+
+## Barge-in
+
+When the caller starts speaking while the agent is mid-sentence,
+Voxtra emits a `BARGE_IN` event and stops the in-flight TTS. The
+caller hears their own audio cleanly — no echo of the cancelled agent
+audio.
+
+Barge-in is on by default. Disable it for transactional confirmations
+where the user shouldn't be able to interrupt:
+
+```python
+await call.say("Your verification code is one two three. Did you get that?", interruptible=False)
+user = await call.listen(timeout=5)
+```
+
+## Tool calls
+
+If your LLM provider supports tools, `respond()` returns them in
+`reply.tool_calls`:
+
+```python
+reply = await call.agent.respond(user.text)
+
+for tool in reply.tool_calls:
+    if tool["name"] == "lookup_order":
+        order = await db.fetch_order(tool["arguments"]["order_id"])
+        # Feed the result back to the agent
+        await call.agent.add_tool_result(tool["id"], result=str(order))
+        reply = await call.agent.respond("")  # follow-up turn
+        await call.say(reply.text)
+```
+
+Define the tool schemas at agent-construction time:
+
+```python
+llm = OpenAIAgent(
+    api_key="...",
+    model="gpt-4o-mini",
+    system_prompt="...",
+    tools=[
+        {
+            "type": "function",
+            "function": {
+                "name": "lookup_order",
+                "description": "Fetch order details by ID.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"order_id": {"type": "string"}},
+                    "required": ["order_id"],
+                },
+            },
+        }
+    ],
+)
+```
+
+## Idle handling
+
+Voxtra ships an `IdleMonitor` that ends sessions after prolonged silence
+on the SIP leg. By default it triggers after 30s of "no SIP participant
+present"; browser observers leaving doesn't count.
+
+When you want to suspend idle handling — for example, during a human
+handoff — flip the suspended flag:
+
+```python
+@app.default()
+async def handle(call):
+    await call.answer()
+    # ... AI conversation ...
+
+    await call.bridge_with(human_agent_session)
+    # Don't time out the call while a human is talking to the customer
+    if call.idle_monitor:
+        call.idle_monitor.suspended = True
+```
+
+## Switching providers
+
+The provider registry makes this a one-line change. Configure a different
+STT without touching anything else:
+
+```python
+from voxtra.ai.stt.assembly import AssemblyAISTT
+
+app = VoxtraApp(
+    ...,
+    stt=AssemblyAISTT(api_key="..."),  # ← swap here
+    llm=OpenAIAgent(...),
+    tts=ElevenLabsTTS(...),
+)
+```
+
+## Production tips
+
+<Steps>
+
+### Run STT, TTS, and LLM in the same region
+
+Voice latency is dominated by network round-trips. Put your Voxtra
+process in the same cloud region as your STT and TTS providers when
+possible.
+
+### Buffer caps matter
+
+`MediaConfig.buffer_size_ms` (default 200ms) is your jitter tolerance.
+Increase for noisier networks; decrease for tighter responsiveness.
+
+### Use tool calls for handoff
+
+Don't let the LLM hallucinate "I'll transfer you now." Define an
+`escalate_to_human` tool and act on the tool call — the LLM tells you
+when to transfer instead of relying on text-pattern matching.
+
+### Save transcripts
+
+Register an `on_hangup` callback that persists `call.agent.history` to
+your database. The webhook system can also forward `USER_TRANSCRIPT` and
+`AGENT_RESPONSE` in real time — see [Webhooks](/voxtra/guides/webhooks).
+
+</Steps>
+
+<Callout type="warning">
+  Keep your system prompt short. Every turn re-sends the full history;
+  bloated prompts waste tokens and add latency. The LLM doesn't need
+  procedural rules in the system prompt — encode them in tools instead.
+</Callout>

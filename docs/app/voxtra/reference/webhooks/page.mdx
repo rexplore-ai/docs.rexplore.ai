@@ -1,0 +1,171 @@
+---
+title: BackendWebhook
+description:
+  API reference for the BackendWebhook emitter and the WebhookConfig
+  model. HTTP delivery of every VoxtraEvent to your backend.
+---
+
+# `BackendWebhook`
+
+```python
+from voxtra import BackendWebhook
+from voxtra.config import WebhookConfig
+```
+
+Async HTTP emitter for `VoxtraEvent`s. Fire-and-forget delivery with
+HMAC signing, retries, and per-event-type filtering.
+
+## `WebhookConfig`
+
+```python
+class WebhookConfig(BaseModel):
+    url: str = ""
+    signing_secret: str = ""
+    events: list[str] = []
+    timeout_seconds: float = 10.0
+    max_retries: int = 3
+    retry_backoff: float = 1.0
+```
+
+| Field            | Default | Notes                                                    |
+| ---------------- | ------- | -------------------------------------------------------- |
+| `url`            | `""`    | Empty string disables emission.                          |
+| `signing_secret` | `""`    | When set, every request includes `X-Voxtra-Signature`.   |
+| `events`         | `[]`    | Allowlist of event-type strings. Empty list = all events. |
+| `timeout_seconds`| `10.0`  | Per-request HTTP timeout.                                |
+| `max_retries`    | `3`     | Retries on 5xx / transport errors.                       |
+| `retry_backoff`  | `1.0`   | Initial backoff in seconds; doubles each attempt.        |
+
+## Constructor
+
+```python
+BackendWebhook(
+    config: WebhookConfig,
+    *,
+    http_client: httpx.AsyncClient | None = None,
+)
+```
+
+When `http_client` is `None`, the emitter creates and owns an
+`httpx.AsyncClient` (closed on `aclose()` / `app.stop()`). Pass an
+external client to share it across emitters or other code — Voxtra
+will not close clients it doesn't own.
+
+## Methods
+
+### `await webhook.emit(event: VoxtraEvent) → bool`
+
+Deliver a single event. Returns `True` on a 2xx response (within the
+retry budget), `False` otherwise. Failures are swallowed and logged
+at WARNING — `emit` never raises.
+
+```python
+await webhook.emit(some_event)
+```
+
+You typically don't call this yourself — `VoxtraApp` calls it
+automatically when a `webhook=` is configured.
+
+### `await webhook.aclose()`
+
+Close the underlying HTTP client (only if owned).
+
+## Behaviour
+
+### Signature
+
+When `signing_secret` is set, the request includes:
+
+```
+X-Voxtra-Signature: <hmac_sha256(secret, body)>
+```
+
+The hex digest is computed over the **raw request body** (the
+canonical JSON, with `","` and `":"` separators — no whitespace).
+
+### Headers
+
+Every request includes:
+
+| Header                | Value                                            |
+| --------------------- | ------------------------------------------------ |
+| `Content-Type`        | `application/json`                               |
+| `User-Agent`          | `voxtra-webhook/1`                               |
+| `X-Voxtra-Event`      | The `event.type` string                          |
+| `X-Voxtra-Event-Id`   | The `event.id` (use as idempotency key)          |
+| `X-Voxtra-Session-Id` | The `event.session_id`                           |
+| `X-Voxtra-Signature`  | HMAC-SHA256 (when secret set)                    |
+
+### Retry policy
+
+| Outcome           | Behaviour                                  |
+| ----------------- | ------------------------------------------ |
+| 2xx               | Done.                                      |
+| 4xx               | Drop, log at WARNING — no retry.          |
+| 5xx               | Retry up to `max_retries` times.          |
+| Transport error   | Retry up to `max_retries` times.          |
+| Retry budget exhausted | Drop, log at WARNING.                |
+
+Backoff is exponential — `retry_backoff`, then `2×`, then `4×`, etc.
+
+### Filtering
+
+`events=[]` (default) emits every event. To restrict:
+
+```python
+WebhookConfig(
+    url="...",
+    events=[
+        "call.started",
+        "call.ended",
+        "user.transcript",          # finals only — partials have a different type
+    ],
+)
+```
+
+The string values are the `EventType` enum values (e.g.
+`call.started`, not `CALL_STARTED`).
+
+## Wiring into `VoxtraApp`
+
+### Constructor parameter
+
+```python
+from voxtra import VoxtraApp, BackendWebhook
+from voxtra.config import WebhookConfig
+
+webhook = BackendWebhook(WebhookConfig(url="https://api.example.com/webhooks/voxtra"))
+app = VoxtraApp(..., webhook=webhook)
+```
+
+### Auto-built from config
+
+`VoxtraApp.from_config(VoxtraConfig)` (and `from_yaml`) auto-build a
+`BackendWebhook` when `config.backend.webhook.url` is set:
+
+```yaml filename="voxtra.yaml"
+app_name: voxtra-acme
+telephony:
+  provider: asterisk
+  asterisk:
+    base_url: http://pbx:8088
+    username: voxtra-acme
+    password: ${ARI_PW}
+backend:
+  webhook:
+    url: https://api.example.com/webhooks/voxtra
+    signing_secret: ${WEBHOOK_SECRET}
+    events:
+      - call.started
+      - call.ended
+```
+
+```python
+app = VoxtraApp.from_yaml("voxtra.yaml")
+# app._webhook is a BackendWebhook configured from the YAML
+```
+
+## Receiver examples
+
+See the [Webhooks guide](/voxtra/guides/webhooks) for FastAPI, Express,
+and Go receiver examples with signature verification.

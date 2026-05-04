@@ -1,0 +1,229 @@
+---
+title: CallSession
+description:
+  API reference for CallSession — the developer-facing handle for an
+  active call. Lifecycle, audio I/O, DTMF, recording, and AI shortcuts.
+---
+
+# `CallSession`
+
+```python
+from voxtra import CallSession  # only for type hints
+```
+
+The handle your handler receives. You don't construct these yourself;
+`VoxtraApp` does it for every inbound call and every successful
+`originate()`.
+
+## Attributes
+
+| Attribute            | Type                | Notes                                              |
+| -------------------- | ------------------- | -------------------------------------------------- |
+| `call.id`            | `str`               | Same as Asterisk channel ID.                       |
+| `call.caller_id`     | `str`               | Calling party number.                              |
+| `call.called_number` | `str`               | Dialed extension or DID.                           |
+| `call.direction`     | `CallDirection`     | `INBOUND` or `OUTBOUND`.                           |
+| `call.state`         | `CallState`         | `RINGING`, `IN_PROGRESS`, `ON_HOLD`, `COMPLETED`, `FAILED`. |
+| `call.metadata`      | `dict`              | Arbitrary store. Pre-filled with route metadata.   |
+| `call.duration`      | `float`             | Seconds since `answer()`. 0 before answer.         |
+| `call.app_name`      | `str`               | Owning `VoxtraApp`'s `app_name`.                   |
+| `call.agent`         | `AgentClient`       | LLM conversation handle (when AI pipeline configured). |
+
+## Lifecycle
+
+### `await call.answer()`
+
+200 OK the call. State transitions to `IN_PROGRESS`. `call.duration`
+starts counting.
+
+### `await call.hangup()`
+
+Tear down the channel. Idempotent — calling it twice is fine. Triggers
+`on_hangup` callbacks.
+
+### `await call.hold()` / `await call.unhold()`
+
+Music-on-hold the far end.
+
+### `await call.transfer_to(endpoint)`
+
+Blind transfer the call to a new endpoint:
+
+```python
+await call.transfer_to("PJSIP/agent-001@internal")
+```
+
+## Audio I/O
+
+### `await call.play_file(filename)`
+
+Play an Asterisk-bundled prompt:
+
+```python
+await call.play_file("hello-world")            # sound:hello-world
+await call.play_file("sound:hello-world")      # explicit prefix
+```
+
+### `await call.say(text, *, interruptible=True)`
+
+Synthesize text via the configured TTS and play it back. Returns when
+the speech ends (or earlier if interrupted by barge-in, when
+`interruptible=True`).
+
+```python
+await call.say("Welcome to Acme.")
+```
+
+Raises `RuntimeError("AI pipeline not configured")` if no TTS is set.
+
+### `async for chunk in call.audio_stream():`
+
+Iterate raw inbound audio frames:
+
+```python
+async for chunk in call.audio_stream():
+    # chunk: AudioChunk (μ-law by default, ~20ms)
+    processed = my_dsp(chunk)
+    await call.send_audio(processed)
+```
+
+### `await call.send_audio(chunk)`
+
+Send a frame to the far end.
+
+## DTMF
+
+### `await call.listen_dtmf(timeout=None) → str | None`
+
+Wait for a single DTMF digit:
+
+```python
+digit = await call.listen_dtmf(timeout=5)
+if digit == "1":
+    ...
+```
+
+Returns `None` on timeout.
+
+### `await call.send_dtmf(dtmf)`
+
+Send DTMF tones to the far end (typically for navigating downstream IVRs):
+
+```python
+await call.send_dtmf("4321#")
+```
+
+## Recording
+
+### `await call.record_start(name="", fmt="wav", *, sink=None) → str`
+
+Start recording the call. Returns the recording name.
+
+```python
+name = await call.record_start()                # auto-generated name
+name = await call.record_start("acme-call-001") # explicit name
+name = await call.record_start(sink=GCSSink(...))  # per-call sink
+```
+
+Without `sink=`, the recording uses the app-level default
+(`VoxtraApp(recording_sink=...)`) or `LocalFileSink` if neither is set.
+
+### `await call.record_stop() → str | None`
+
+Stop the recording. Fires the configured `RecordingSink` exactly once
+with a `RecordingMetadata` object. Returns the recording name, or
+`None` if no recording was active.
+
+```python
+await call.record_stop()
+```
+
+## Bridging
+
+### `await call.bridge_with(other: CallSession) → str`
+
+Create a mixing bridge between two sessions. Both calls share audio:
+
+```python
+async def transfer_to_agent(ai_call, agent_call):
+    await ai_call.bridge_with(agent_call)
+```
+
+Returns the bridge ID.
+
+### `await call.transfer_to_queue(queue_name)`
+
+Send the call into an Asterisk queue.
+
+## AI shortcuts
+
+Available when `VoxtraApp` is constructed with `stt=`, `llm=`, and `tts=`.
+
+### `await call.say(text)`
+
+(See above under Audio I/O.)
+
+### `await call.listen(timeout=None) → UserTranscriptEvent | None`
+
+Wait for a final user transcript. Returns `None` on timeout. Partial
+transcripts are filtered out — you only see finals.
+
+```python
+user = await call.listen(timeout=10)
+if user:
+    print(user.text, user.confidence)
+```
+
+### `call.agent.respond(text) → AgentResponseEvent`
+
+Single-turn LLM call with running conversation history:
+
+```python
+reply = await call.agent.respond(user.text)
+print(reply.text, reply.tool_calls)
+```
+
+### `call.agent.history`
+
+The conversation messages list. Mutate it to seed context or replay
+prior turns:
+
+```python
+call.agent.history.append({"role": "user", "content": "Hi from earlier."})
+```
+
+### `call.agent.add_tool_result(tool_id, result)`
+
+Feed a tool-call result back to the LLM:
+
+```python
+await call.agent.add_tool_result(tool_id="t-1", result="Order #4321 shipped 2026-05-04")
+reply = await call.agent.respond("")
+```
+
+## Callbacks
+
+### `@call.on_hangup`
+
+Register an async callback that fires exactly once when the call
+hangs up:
+
+```python
+@call.on_hangup
+async def cleanup():
+    await save_transcript(call.id, call.agent.history)
+```
+
+Multiple callbacks can be registered; they fire in registration order.
+
+## Internals (advanced)
+
+These are exposed but not part of the stable public API.
+
+- `call._event_queue` — the underlying `asyncio.Queue[VoxtraEvent]`.
+- `call._dtmf_queue` — DTMF-specific queue.
+- `call._ari` — the `ARIClient` instance backing this session (may be None).
+- `call._pipeline` — the auto-wired `VoicePipeline` (if any).
+- `call._default_recording_sink` — the app-level sink populated by `VoxtraApp`.
+
+Use sparingly — these are subject to internal refactors between minor versions.

@@ -155,6 +155,66 @@ export default {
   api: {
     type: 'page'
   },
+  voxtra: {
+    type: 'page',
+    title: 'Voxtra',
+    items: {
+      index: '',
+      'getting-started': '',
+      _: {
+        type: 'separator',
+        title: 'Concepts'
+      },
+      concepts: {
+        items: {
+          architecture: '',
+          events: '',
+          sessions: '',
+          routing: ''
+        }
+      },
+      __: {
+        type: 'separator',
+        title: 'Guides'
+      },
+      guides: {
+        items: {
+          'ai-voice-agent': '',
+          'inbound-and-outbound': '',
+          webhooks: '',
+          recording: '',
+          'multi-tenant': ''
+        }
+      },
+      ___: {
+        type: 'separator',
+        title: 'Reference'
+      },
+      reference: {
+        items: {
+          'voxtra-app': '',
+          'ari-client': '',
+          'call-session': '',
+          webhooks: '',
+          recording: '',
+          provisioning: ''
+        }
+      },
+      ____: {
+        type: 'separator',
+        title: 'Resources'
+      },
+      examples: '',
+      'voxtra-github-link': {
+        title: 'GitHub Repo',
+        href: 'https://github.com/rexplore-ai/voxtra'
+      },
+      'voxtra-pypi-link': {
+        title: 'PyPI',
+        href: 'https://pypi.org/project/voxtra/'
+      }
+    }
+  },
   github: {
     type: 'page',
     title: 'GitHub',

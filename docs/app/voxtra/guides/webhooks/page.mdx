@@ -1,0 +1,254 @@
+---
+title: Webhooks
+description:
+  Push every Voxtra event to your backend over HTTP. Includes HMAC
+  signing, retry semantics, and a reference receiver.
+---
+
+import { Callout, Tabs } from 'nextra/components'
+
+# Webhooks
+
+`BackendWebhook` is the bridge between Voxtra's in-process event stream
+and your downstream services. Configure a URL once, and every
+`VoxtraEvent` POSTs to it as a fire-and-forget request — without
+blocking the call pipeline.
+
+## When to use webhooks
+
+- Sync call state to a CRM (Salesforce, HubSpot).
+- Fire billing events when a call answers / ends.
+- Stream live transcripts to a dashboard.
+- Trigger downstream automation (e.g. Slack notification on barge-in).
+- Mirror call activity into your data warehouse.
+
+## Configure
+
+```python
+from voxtra import VoxtraApp, BackendWebhook
+from voxtra.config import WebhookConfig
+
+webhook = BackendWebhook(
+    WebhookConfig(
+        url="https://api.example.com/webhooks/voxtra",
+        signing_secret="please-rotate-me",
+        events=["call.started", "call.answered", "call.ended"],
+        max_retries=3,
+        retry_backoff=1.0,
+    ),
+)
+
+app = VoxtraApp(
+    ari_url="...",
+    ari_user="...",
+    ari_password="...",
+    webhook=webhook,
+)
+```
+
+`events=[]` (the default) emits **every** event type.
+
+## What gets sent
+
+Each request is a POST with a JSON body matching the
+[event schema](/voxtra/concepts/events#the-shape-of-an-event):
+
+```json
+{
+  "id": "8a91c2...",
+  "type": "call.started",
+  "session_id": "ch-1234",
+  "timestamp": "2026-05-04T08:31:21.512Z",
+  "data": {
+    "caller_id": "+265888111111",
+    "called_number": "+265999000001",
+    "direction": "inbound"
+  }
+}
+```
+
+Headers:
+
+| Header                | Value                                            |
+| --------------------- | ------------------------------------------------ |
+| `Content-Type`        | `application/json`                               |
+| `User-Agent`          | `voxtra-webhook/1`                               |
+| `X-Voxtra-Event`      | The event type, e.g. `call.started`              |
+| `X-Voxtra-Event-Id`   | The event's `id` (idempotency key)               |
+| `X-Voxtra-Session-Id` | The `session_id`                                 |
+| `X-Voxtra-Signature`  | `hmac_sha256(secret, body)` (when `signing_secret` set) |
+
+## Verify the signature
+
+<Tabs items={['FastAPI (Python)', 'Express (Node)', 'Go']}>
+<Tabs.Tab>
+```python
+import hashlib
+import hmac
+from fastapi import FastAPI, Header, HTTPException, Request
+
+WEBHOOK_SECRET = b"please-rotate-me"
+
+app = FastAPI()
+
+@app.post("/webhooks/voxtra")
+async def voxtra(
+    request: Request,
+    x_voxtra_signature: str = Header(...),
+    x_voxtra_event_id: str = Header(...),
+):
+    body = await request.body()
+    expected = hmac.new(WEBHOOK_SECRET, body, hashlib.sha256).hexdigest()
+    if not hmac.compare_digest(expected, x_voxtra_signature):
+        raise HTTPException(status_code=401, detail="bad signature")
+
+    # Idempotency: drop if we've seen this event before.
+    if await seen(x_voxtra_event_id):
+        return {"status": "duplicate"}
+
+    payload = await request.json()
+    await dispatch(payload)
+    return {"status": "ok"}
+```
+</Tabs.Tab>
+<Tabs.Tab>
+```js
+import express from 'express'
+import crypto from 'node:crypto'
+
+const SECRET = 'please-rotate-me'
+const app = express()
+
+app.post('/webhooks/voxtra', express.raw({ type: 'application/json' }), (req, res) => {
+  const sig = req.header('x-voxtra-signature')
+  const expected = crypto.createHmac('sha256', SECRET).update(req.body).digest('hex')
+  if (!crypto.timingSafeEqual(Buffer.from(expected), Buffer.from(sig))) {
+    return res.status(401).send('bad signature')
+  }
+  const payload = JSON.parse(req.body.toString('utf-8'))
+  // ...
+  res.json({ status: 'ok' })
+})
+```
+</Tabs.Tab>
+<Tabs.Tab>
+```go
+package main
+
+import (
+    "crypto/hmac"
+    "crypto/sha256"
+    "encoding/hex"
+    "io"
+    "net/http"
+)
+
+const secret = "please-rotate-me"
+
+func voxtraHandler(w http.ResponseWriter, r *http.Request) {
+    body, _ := io.ReadAll(r.Body)
+    mac := hmac.New(sha256.New, []byte(secret))
+    mac.Write(body)
+    expected := hex.EncodeToString(mac.Sum(nil))
+    if !hmac.Equal([]byte(expected), []byte(r.Header.Get("X-Voxtra-Signature"))) {
+        http.Error(w, "bad signature", http.StatusUnauthorized)
+        return
+    }
+    // ...
+    w.Write([]byte(`{"status":"ok"}`))
+}
+```
+</Tabs.Tab>
+</Tabs>
+
+## Retry semantics
+
+| Outcome           | Retry?                            |
+| ----------------- | --------------------------------- |
+| 2xx               | Done.                             |
+| 4xx               | No — receiver bug, won't fix.    |
+| 5xx               | Yes, with exponential backoff.   |
+| Transport error   | Yes, with exponential backoff.   |
+
+Backoff doubles each attempt starting at `retry_backoff` seconds. After
+`max_retries` failed attempts the event is logged at WARNING and dropped.
+
+<Callout type="warning">
+  Webhook delivery is **at-most-once**. For at-least-once semantics
+  (sufficient for billing / CRM use cases), persist events on the
+  receiver side using `X-Voxtra-Event-Id` as the idempotency key, then
+  reconcile periodically against authoritative state from your own
+  database.
+</Callout>
+
+## Filtering events
+
+Pass an allowlist to keep traffic small:
+
+```python
+WebhookConfig(
+    url="https://api.example.com/webhooks/voxtra",
+    events=[
+        "call.started",
+        "call.answered",
+        "call.ended",
+        "user.transcript",       # only finals (no partials)
+        "agent.response",
+    ],
+)
+```
+
+The full list of `EventType` values is in the
+[Events reference](/voxtra/concepts/events).
+
+## Production deployment
+
+### Receiver should respond fast
+
+Voxtra's HTTP timeout defaults to 10 seconds. Long-running work on the
+receiver — DB writes that take seconds, complex orchestration — should
+return 2xx quickly and process asynchronously (queue, worker, etc.).
+
+### Health check the receiver
+
+Add a `/health` endpoint your monitoring polls. Webhook drops are
+silent in Voxtra logs (by design — they don't break calls); you need
+external observability.
+
+### Rotate the signing secret
+
+`WebhookConfig.signing_secret` can be a string or fetched from a
+secret manager at construction time. Rotate quarterly. To roll without
+downtime: support both old + new secrets on the receiver, switch
+Voxtra to the new secret, then drop the old one.
+
+### Observe drift
+
+A reconciliation job that periodically pulls authoritative call state
+from Asterisk (or your DB) and compares against what your webhook
+receiver wrote is the safety net against missed events. Luso8 does
+this every five minutes — see
+[Call reconciler](https://github.com/rexplore-ai/luso8/blob/master/luso8.backend/app/tasks/call_reconciler.py).
+
+## Sharing an HTTP client
+
+By default `BackendWebhook` owns its `httpx.AsyncClient` and closes it
+on `app.stop()`. Pass an external client to share it across multiple
+emitters or other code:
+
+```python
+import httpx
+
+shared = httpx.AsyncClient(timeout=10.0)
+
+webhook = BackendWebhook(
+    WebhookConfig(url="..."),
+    http_client=shared,
+)
+
+# Voxtra won't close `shared` — you do, when your app shuts down.
+```
+
+## Reference
+
+[`BackendWebhook` API reference →](/voxtra/reference/webhooks)

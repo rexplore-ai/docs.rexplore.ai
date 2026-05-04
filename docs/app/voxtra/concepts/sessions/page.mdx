@@ -1,0 +1,191 @@
+---
+title: Sessions
+description:
+  CallSession is the developer-facing handle for an active call.
+  Lifecycle, state, audio I/O, and how the framework cleans up after itself.
+---
+
+# Sessions
+
+A `CallSession` represents one active call. Every inbound call into your
+Stasis app, and every successful `app.originate(...)`, produces one. The
+session is what your handler gets and what you operate on:
+
+```python
+@app.default()
+async def handle(call):  # call: CallSession
+    ...
+```
+
+## Lifecycle
+
+```ascii
+   created ──▶ ringing ──▶ answered ──▶ in-progress ──▶ completed
+                  │            │             │
+                  ▼            ▼             ▼
+                 (early hangup paths land in completed)
+```
+
+States live on `call.state`:
+
+- `RINGING` — created, not yet answered.
+- `IN_PROGRESS` — answered, audio flowing.
+- `ON_HOLD` — explicit hold requested.
+- `COMPLETED` — terminal.
+- `FAILED` — origination or answer failed.
+
+Most handlers don't inspect state directly; the high-level methods
+(`answer`, `say`, `listen`, `hangup`) wait for the right state on your
+behalf.
+
+## Identity
+
+| Attribute        | Type        | Meaning                                                   |
+| ---------------- | ----------- | --------------------------------------------------------- |
+| `call.id`        | `str`       | Unique identifier — same as the Asterisk channel ID.      |
+| `call.caller_id` | `str`       | The calling party number (E.164 typically).               |
+| `call.called_number` | `str`   | The dialed extension or DID.                              |
+| `call.direction` | `CallDirection` | `INBOUND` or `OUTBOUND`.                              |
+| `call.metadata`  | `dict`      | Arbitrary key-value store. Pre-populated with route metadata. |
+| `call.duration`  | `float`     | Seconds since `answer()` (0 before answer).               |
+
+`call.metadata` is the recommended place to stash per-call context.
+Anything you put there is also visible to AI tool calls and webhook
+payloads (when you opt in via `metadata.update_for_webhook`).
+
+## Lifecycle methods
+
+```python
+await call.answer()                    # 200 OK the call
+await call.hangup()                    # tear down (idempotent)
+await call.hold()                      # MOH on the far end
+await call.unhold()
+await call.transfer_to("+265999...")   # blind transfer
+```
+
+Each is a thin wrapper over the corresponding ARI verb, with safer error
+handling than the raw client (404-on-already-gone is treated as success).
+
+## Audio I/O
+
+Voxtra exposes two layers of audio API:
+
+**High-level (recommended):**
+
+```python
+await call.play_file("hello-world")              # Asterisk-bundled prompt
+await call.say("This is dynamically generated.")  # uses configured TTS
+text = await call.listen(timeout=10)              # awaits USER_TRANSCRIPT
+```
+
+**Low-level (raw frames):**
+
+```python
+async for chunk in call.audio_stream():
+    # chunk: AudioChunk (codec=μ-law, ~20ms)
+    processed = my_dsp(chunk)
+    await call.send_audio(processed)
+```
+
+Use the low-level path when you're doing custom DSP, plugging in a non-
+Voxtra STT, or routing audio to an external service.
+
+## DTMF
+
+```python
+digit = await call.listen_dtmf(timeout=5)
+if digit == "1":
+    ...
+
+await call.send_dtmf("4321")          # send DTMF to the far end
+```
+
+`listen_dtmf` consumes from a dedicated DTMF queue so it doesn't compete
+with `listen()` (which awaits transcripts).
+
+## Recording
+
+```python
+name = await call.record_start()      # auto-generated name
+# ... call continues ...
+await call.record_stop()              # fires the configured RecordingSink
+```
+
+If a sink is configured at the app level (`VoxtraApp(recording_sink=...)`)
+or per-call (`record_start(sink=...)`), it receives a `RecordingMetadata`
+object on stop. See [Recording guide](/voxtra/guides/recording).
+
+## Bridging
+
+Two sessions can be merged into a single audio bridge — typical for
+human handoff after an AI conversation:
+
+```python
+async def transfer_to_agent(ai_call, agent_session):
+    await ai_call.bridge_with(agent_session)
+    # both calls now share audio
+```
+
+For agent queues:
+
+```python
+await call.transfer_to_queue("support-queue")
+```
+
+## AI shortcuts
+
+When STT + LLM + TTS are configured on the `VoxtraApp`, every session
+gets an auto-wired `VoicePipeline` and exposes:
+
+```python
+await call.say(text)                    # synthesize + play
+user = await call.listen(timeout=10)    # transcribe inbound audio
+reply = await call.agent.respond(text)  # LLM call with conversation history
+```
+
+The `agent` object maintains per-session message history, so multi-turn
+conversations work without you stitching things together.
+
+If the pipeline isn't configured (no STT/LLM/TTS), these methods raise
+`RuntimeError("AI pipeline not configured")` so failures are loud.
+
+## Cleanup contract
+
+Voxtra guarantees:
+
+1. Each `CallSession` is removed from `app._sessions` exactly once.
+2. `on_hangup` callbacks fire exactly once.
+3. The auto-wired pipeline task is cancelled on hangup.
+4. The recording sink is invoked exactly once when `record_stop` is
+   called (or as part of automatic stop on hangup, if recording was
+   active).
+
+If your handler returns without calling `hangup`, the framework hangs
+the call up for you in the `finally` block of `_run_handler`.
+
+## Pattern: handler skeleton
+
+```python
+@app.default()
+async def handle(call):
+    await call.answer()
+
+    @call.on_hangup
+    async def save():
+        await persist_call(call.id, call.metadata)
+
+    try:
+        await call.say("Welcome to Acme support.")
+        digit = await call.listen_dtmf(timeout=5)
+        if digit == "1":
+            await call.transfer_to_queue("support")
+        else:
+            await call.say("Goodbye.")
+            await call.hangup()
+    except Exception:
+        await call.hangup()
+        raise
+```
+
+The `try/except` is optional — the framework already wraps your handler
+in error handling — but explicit cleanup of mid-call state goes here.

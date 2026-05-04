@@ -1,0 +1,212 @@
+---
+title: Recording
+description:
+  Record calls and ship the resulting files anywhere — GCS, S3, or
+  your own pipeline — using Voxtra's pluggable RecordingSink interface.
+---
+
+import { Callout } from 'nextra/components'
+
+# Recording
+
+Voxtra writes recordings via Asterisk's native ARI recording API
+(`/var/spool/asterisk/recording/`). What's pluggable is **what
+happens after the recording stops** — Voxtra calls a `RecordingSink`
+with a metadata payload, and your sink ships the file wherever it
+needs to go.
+
+## Anatomy
+
+```ascii
+              record_start()
+                    │
+                    ▼
+       Asterisk MixMonitor / record API
+                    │  (writes file to /var/spool/asterisk/recording/)
+                    ▼
+              record_stop()
+                    │
+                    ▼
+        ┌────────────────────────┐
+        │  RecordingSink         │
+        │  on_recording_complete │  ◀── you implement this
+        └────────────────────────┘
+                    │
+                    ▼
+          GCS / S3 / S3-compatible /
+          webhook to your service /
+          local archival …
+```
+
+The sink is purely a notification — Voxtra never reads the audio
+file itself, never holds it in memory, and never ships bytes
+anywhere. That keeps the library small and your storage choice
+flexible.
+
+## Built-in sinks
+
+### `LocalFileSink` (default no-op)
+
+Logs a debug line and does nothing else. Use as a placeholder when
+you want recording on but don't yet have an upload path:
+
+```python
+from voxtra.recording import LocalFileSink
+
+app = VoxtraApp(..., recording_sink=LocalFileSink())
+```
+
+### `WebhookSink`
+
+POSTs the recording metadata to an HTTP URL. The receiver is
+responsible for fetching the audio (via Asterisk's HTTP recording
+endpoint, an `scp`, or anything else) and uploading it to long-term
+storage.
+
+```python
+from voxtra.recording import WebhookSink
+
+sink = WebhookSink(
+    "https://api.example.com/webhooks/recording",
+    signing_secret="please-rotate-me",
+)
+
+app = VoxtraApp(..., recording_sink=sink)
+```
+
+Payload:
+
+```json
+{
+  "session_id": "ch-1234",
+  "name": "voxtra-rec-...",
+  "file_path": "/var/spool/asterisk/recording/voxtra-rec-....wav",
+  "duration_seconds": 42.3,
+  "format": "wav",
+  "extra": {}
+}
+```
+
+When `signing_secret` is set, the request includes
+`X-Voxtra-Signature` with `hmac_sha256(secret, body)` — same scheme
+as the [event webhooks](/voxtra/guides/webhooks).
+
+### `CompositeSink`
+
+Fan a single recording event out to multiple sinks. Per-sink errors
+are isolated, so a slow or broken sink can't starve the others:
+
+```python
+from voxtra.recording import CompositeSink, WebhookSink, LocalFileSink
+
+sink = CompositeSink(
+    LocalFileSink(),                                       # local debug log
+    WebhookSink("https://crm.example.com/recordings"),     # CRM
+    WebhookSink("https://archive.example.com/recordings"), # archive
+)
+app = VoxtraApp(..., recording_sink=sink)
+```
+
+## Custom sinks
+
+Implement `RecordingSink` for any custom behaviour:
+
+```python
+from voxtra.recording import RecordingSink, RecordingMetadata
+from google.cloud import storage
+
+class GCSSink(RecordingSink):
+    """Upload finished recordings to a GCS bucket."""
+
+    def __init__(self, bucket: str, prefix: str = ""):
+        self._bucket = storage.Client().bucket(bucket)
+        self._prefix = prefix
+
+    async def on_recording_complete(self, meta: RecordingMetadata) -> None:
+        blob_name = f"{self._prefix}{meta.session_id}/{meta.name}.{meta.format}"
+        blob = self._bucket.blob(blob_name)
+
+        # google-cloud-storage is sync; offload so we don't block the loop.
+        import asyncio
+        await asyncio.to_thread(blob.upload_from_filename, meta.file_path)
+
+        logger.info("Uploaded %s to gs://%s/%s",
+                    meta.name, self._bucket.name, blob_name)
+```
+
+Then wire it in:
+
+```python
+app = VoxtraApp(
+    ari_url="...", ari_user="...", ari_password="...",
+    recording_sink=GCSSink(bucket="my-call-recordings", prefix="prod/"),
+)
+```
+
+<Callout type="info">
+  Sinks must not raise into the call pipeline. The framework wraps
+  every `on_recording_complete` call in a try/except as a safety net,
+  but well-behaved sinks should catch their own errors and log them.
+</Callout>
+
+## Per-call sinks
+
+Override the app default for a single recording:
+
+```python
+@app.default()
+async def handle(call):
+    await call.answer()
+
+    # This call uses a different sink — say, a high-priority bucket.
+    await call.record_start(sink=PrioritySink())
+
+    await call.say("This call may be recorded for quality assurance.")
+    user = await call.listen(timeout=30)
+    ...
+    await call.record_stop()
+```
+
+When `sink=` is omitted, `record_stop` falls back to the app-level
+default (`VoxtraApp(recording_sink=...)`).
+
+## Recording lifetime
+
+| Phase            | What Voxtra does                                           |
+| ---------------- | ---------------------------------------------------------- |
+| `record_start()` | POSTs to ARI `/channels/{id}/record`. Stores name + format. |
+| Mid-call         | Asterisk writes the file. Voxtra has no involvement.       |
+| `record_stop()`  | POSTs to ARI `/recordings/live/{name}/stop`. Calls the sink with metadata. |
+| Hangup mid-recording | If the recording is still active, `record_stop` is implicitly called as part of session cleanup. |
+
+## File-path semantics
+
+`RecordingMetadata.file_path` is a **best-effort** guess at where
+Asterisk wrote the file:
+
+```
+/var/spool/asterisk/recording/{recording_name}.{format}
+```
+
+If your Asterisk deployment moves recordings (CDR-driven uploads,
+custom MixMonitor paths), treat `file_path` as a hint, not a
+guarantee. Use Asterisk's `recordingfinished` AMI/CDR event to find
+the canonical location, or query ARI for stored-recording metadata
+via the raw client.
+
+## Format options
+
+`record_start(fmt=)` accepts any format Asterisk supports —
+`wav`, `gsm`, `ulaw`, `alaw`, `wav49`, etc.
+
+```python
+await call.record_start(fmt="wav")    # 16-bit PCM, ~1MB/min
+await call.record_start(fmt="gsm")    # narrowband, ~100KB/min
+```
+
+For maximum-fidelity transcription downstream, prefer `wav`. For
+storage-bound use cases, `gsm` is ~10x smaller.
+
+## Reference
+
+[`RecordingSink` API reference →](/voxtra/reference/recording)

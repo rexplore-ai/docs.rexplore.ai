@@ -1,0 +1,171 @@
+---
+title: Events
+description:
+  Voxtra's event taxonomy — every signal that can flow through a CallSession,
+  with the data each event carries and where each fires.
+---
+
+# Events
+
+Voxtra uses a single typed event class — `VoxtraEvent` — to describe
+everything that happens during a call. Events flow into a per-session
+`asyncio.Queue` and your handler consumes them via `listen()`,
+`listen_dtmf()`, or by iterating `audio_stream()`.
+
+## The shape of an event
+
+Every event has the same base structure:
+
+```python
+class VoxtraEvent(BaseModel):
+    id: str                # uuid4 hex
+    type: EventType        # "call.started", "user.transcript", ...
+    session_id: str        # the CallSession this belongs to
+    timestamp: datetime    # UTC, set on construction
+    data: dict[str, Any]   # event-specific payload
+```
+
+Specific event types subclass `VoxtraEvent` and add typed fields (for
+example, `UserTranscriptEvent.text` or `DTMFEvent.digit`).
+
+## Event types
+
+The `EventType` enum is the source of truth — these are the values that
+appear in `event.type` and on the wire when emitted by `BackendWebhook`.
+
+### Call lifecycle
+
+| `EventType`               | Wire value           | Fires                                                   |
+| ------------------------- | -------------------- | ------------------------------------------------------- |
+| `CALL_STARTED`            | `call.started`       | Inbound call enters Stasis app or outbound is created.  |
+| `CALL_RINGING`            | `call.ringing`       | The far end is alerting (provider-dependent).           |
+| `CALL_ANSWERED`           | `call.answered`      | The remote party picks up.                              |
+| `CALL_ENDED`              | `call.ended`         | Either side hangs up; deduped across signal sources.    |
+| `CALL_FAILED`             | `call.failed`        | The originate failed before answer.                     |
+| `CALL_TRANSFERRED`        | `call.transferred`   | The session was redirected to another endpoint.         |
+
+### Media
+
+| `EventType`               | Wire value           | Fires                                                   |
+| ------------------------- | -------------------- | ------------------------------------------------------- |
+| `MEDIA_STARTED`           | `media.started`      | AudioSocket connection accepted; bidirectional audio.   |
+| `MEDIA_STOPPED`           | `media.stopped`      | AudioSocket disconnected (FRAME_HANGUP, EOF, error).    |
+| `AUDIO_FRAME_RECEIVED`    | `audio.frame.received` | An inbound media frame is enqueued (rare in handlers). |
+| `AUDIO_FRAME_SENT`        | `audio.frame.sent`   | An outbound frame leaves the queue.                     |
+
+### AI pipeline
+
+| `EventType`               | Wire value                | Fires                                              |
+| ------------------------- | ------------------------- | -------------------------------------------------- |
+| `USER_SPEECH_STARTED`     | `user.speech.started`     | VAD detects voice on the inbound leg.              |
+| `USER_SPEECH_ENDED`       | `user.speech.ended`       | VAD detects silence after voice.                   |
+| `USER_TRANSCRIPT`         | `user.transcript`         | STT produced a final transcript.                   |
+| `USER_TRANSCRIPT_PARTIAL` | `user.transcript.partial` | STT produced an interim transcript.                |
+| `AGENT_THINKING`          | `agent.thinking`          | LLM call started.                                  |
+| `AGENT_RESPONSE`          | `agent.response`          | LLM produced a reply (with optional tool calls).   |
+| `AGENT_SPEECH_STARTED`    | `agent.speech.started`    | TTS started streaming the reply.                   |
+| `AGENT_SPEECH_ENDED`      | `agent.speech.ended`      | TTS finished.                                      |
+
+### Control
+
+| `EventType`               | Wire value           | Fires                                                   |
+| ------------------------- | -------------------- | ------------------------------------------------------- |
+| `DTMF_RECEIVED`           | `dtmf.received`      | A DTMF digit lands on the channel.                      |
+| `BARGE_IN`                | `barge_in`           | User starts talking while the agent is speaking.        |
+| `SILENCE_DETECTED`        | `silence.detected`   | VAD silence threshold elapsed.                          |
+| `TURN_ENDED`              | `turn.ended`         | A logical conversational turn closed.                   |
+
+### System
+
+| `EventType`               | Wire value             | Fires                                                  |
+| ------------------------- | ---------------------- | ------------------------------------------------------ |
+| `ERROR`                   | `error`                | An internal error in the framework or provider.        |
+| `SESSION_CREATED`         | `session.created`      | A `CallSession` is constructed.                        |
+| `SESSION_DESTROYED`       | `session.destroyed`    | A `CallSession` is finalized.                          |
+
+## Consuming events in a handler
+
+Most code uses the high-level helpers and doesn't touch events directly:
+
+```python
+@app.default()
+async def handle(call):
+    await call.answer()
+    await call.say("Welcome.")
+
+    # listen() awaits USER_TRANSCRIPT internally
+    user = await call.listen(timeout=10)
+    if user:
+        reply = await call.agent.respond(user.text)
+        await call.say(reply.text)
+```
+
+When you need fine-grained control, await events directly:
+
+```python
+from voxtra import EventType
+
+@app.default()
+async def handle(call):
+    await call.answer()
+
+    while True:
+        event = await call._event_queue.get()  # see note below
+        if event.type == EventType.DTMF_RECEIVED:
+            digit = event.data["digit"]
+            # ...
+        elif event.type == EventType.CALL_ENDED:
+            return
+```
+
+<aside>
+The internal queue is exposed for advanced use. Prefer the public
+helpers (`listen`, `listen_dtmf`, `audio_stream`, hangup callbacks)
+when they fit; they handle dedup, timeouts, and partial-transcript
+filtering for you.
+</aside>
+
+## Hangup callbacks
+
+Register cleanup logic via `call.on_hangup`:
+
+```python
+@app.default()
+async def handle(call):
+    await call.answer()
+
+    @call.on_hangup
+    async def cleanup():
+        await save_transcript_to_db(call.id)
+
+    await call.say("Hi!")
+    # ... handler returns; cleanup fires when the channel hangs up
+```
+
+Hangup is dispatched exactly once even when both ARI's `StasisEnd` and
+AudioSocket's `FRAME_HANGUP` fire — the framework dedupes them.
+
+## Webhook delivery
+
+When a `BackendWebhook` is configured, every event also POSTs to your
+URL with the same JSON shape:
+
+```json
+{
+  "id": "8a91...",
+  "type": "call.started",
+  "session_id": "ch-1234",
+  "timestamp": "2026-05-04T08:31:21.512Z",
+  "data": {
+    "caller_id": "+265888111111",
+    "called_number": "+265999000001",
+    "direction": "inbound"
+  }
+}
+```
+
+Headers: `X-Voxtra-Event`, `X-Voxtra-Event-Id`, `X-Voxtra-Session-Id`,
+and (when a `signing_secret` is set) an `X-Voxtra-Signature` containing
+`hmac_sha256(secret, body)`.
+
+See [Webhooks guide](/voxtra/guides/webhooks) for receiver examples.

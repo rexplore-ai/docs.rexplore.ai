@@ -1,0 +1,103 @@
+---
+title: Voxtra
+description:
+  Voxtra is open voice infrastructure for AI agents — a Python framework
+  that bridges Asterisk telephony with AI voice agents through a
+  developer-friendly API. Ten lines to a working call handler.
+---
+
+import { Cards } from 'nextra/components'
+
+# Voxtra
+
+**Voxtra** is open voice infrastructure for AI agents. It bridges Asterisk
+telephony with AI voice agents through a clean, batteries-included Python API
+— ten lines to a working call handler.
+
+```python filename="hello.py"
+from voxtra import VoxtraApp
+
+app = VoxtraApp(
+    ari_url="http://pbx.example.com:8088",
+    ari_user="asterisk",
+    ari_password="secret",
+)
+
+@app.default()
+async def handle(call):
+    await call.answer()
+    await call.play_file("hello-world")
+    await call.hangup()
+
+app.run()
+```
+
+That's it. Voxtra owns the ARI connection, dispatches Stasis events, and
+hands you a high-level [`CallSession`](/voxtra/reference/call-session) for
+every inbound call.
+
+## Why Voxtra exists
+
+Building voice AI on Asterisk usually means writing a lot of boilerplate:
+managing the ARI WebSocket, parsing Stasis events, juggling AudioSocket
+frames, plumbing TTS/STT/LLM together, and hardening it all for production.
+
+Voxtra collapses that surface area into four primitives:
+
+- A **[`VoxtraApp`](/voxtra/reference/voxtra-app)** for the application lifecycle.
+- A **[`CallSession`](/voxtra/reference/call-session)** for everything you do
+  to a call (`answer`, `say`, `listen`, `record_start`, `bridge_with`, …).
+- A **[`Router`](/voxtra/concepts/routing)** that maps inbound DIDs and
+  extensions to async handlers.
+- A **[`VoicePipeline`](/voxtra/guides/ai-voice-agent)** that chains STT → LLM → TTS
+  with built-in barge-in detection.
+
+Everything else — webhooks, recording sinks, multi-tenant provisioning,
+SIP-aware idle detection — is layered on top of these four.
+
+## Pick a path
+
+<Cards num={2}>
+  <Cards.Card arrow title="Getting started" href="/voxtra/getting-started">
+    <>Install, run a hello-world Asterisk app, and place your first call.</>
+  </Cards.Card>
+  <Cards.Card arrow title="Build an AI voice agent" href="/voxtra/guides/ai-voice-agent">
+    <>Wire up Deepgram + OpenAI + ElevenLabs and let your call handler talk.</>
+  </Cards.Card>
+  <Cards.Card arrow title="Architecture" href="/voxtra/concepts/architecture">
+    <>How VoxtraApp, ARIClient, AudioSocket, and the pipeline fit together.</>
+  </Cards.Card>
+  <Cards.Card arrow title="API reference" href="/voxtra/reference/voxtra-app">
+    <>Every public class, method, and configuration option.</>
+  </Cards.Card>
+</Cards>
+
+## What's in the box
+
+- **Asterisk-native.** Built directly on ARI. No abstraction layer hiding the
+  PBX. You can drop down to raw `voxtra.ARIClient` whenever you need to.
+- **AudioSocket-first.** Clean TCP audio I/O. No RTP/SRTP complexity in your
+  application code.
+- **Provider registry.** STT, TTS, LLM, VAD, and telephony providers
+  self-register via decorators — third-party packages slot in without
+  touching the core.
+- **SaaS-ready.** Per-tenant Stasis app namespacing
+  ([`TenantProvisioner`](/voxtra/reference/provisioning)) lets one Asterisk
+  cluster host hundreds of isolated Voxtra apps.
+- **Webhook integration.** Every event optionally fans out to your backend
+  via signed HTTP POSTs ([`BackendWebhook`](/voxtra/reference/webhooks)).
+- **Pluggable recording.** Drop in a [`RecordingSink`](/voxtra/reference/recording)
+  to push call recordings to GCS, S3, or your own pipeline.
+
+## Production users
+
+Voxtra powers the Luso8 Cloud call center — every outbound dialer call,
+inbound trunk hit, and AI-handled support conversation goes through it.
+The library is ~3,500 lines, has 200+ tests, and is published to PyPI as
+[`voxtra`](https://pypi.org/project/voxtra/).
+
+## Status
+
+Pre-1.0 but production-ready for the documented surface. Track the
+[changelog](https://github.com/rexplore-ai/voxtra/blob/main/CHANGELOG.md)
+for breaking-change notes between minor versions.

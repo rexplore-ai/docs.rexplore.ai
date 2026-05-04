@@ -1,0 +1,285 @@
+---
+title: Inbound & Outbound Calls
+description:
+  Handle inbound traffic from a SIP trunk and originate outbound calls
+  through Voxtra. Includes dialplan setup, call origination, and the
+  difference between Stasis and dialplan routing.
+---
+
+import { Callout, Tabs } from 'nextra/components'
+
+# Inbound & Outbound Calls
+
+Voxtra handles both directions through the same `CallSession` API. The
+only differences are how the call enters the system and which routing
+mode you use.
+
+## Inbound calls
+
+### Dialplan to Stasis
+
+Add the inbound trunk to a dialplan context that hands the call off to
+your Voxtra Stasis app:
+
+```ini filename="/etc/asterisk/extensions.conf"
+[from-trunk]
+exten => _X.,1,NoOp(Inbound to Voxtra)
+ same => n,Stasis(voxtra)
+ same => n,Hangup()
+```
+
+`voxtra` here is your `VoxtraApp.app_name`. If you're running multi-
+tenant, each tenant gets its own Stasis app (`voxtra-acme`,
+`voxtra-beta`, …) and a matching dialplan stanza.
+
+### Per-DID routing
+
+```ini filename="/etc/asterisk/extensions.conf"
+[from-trunk]
+exten => +265999000001,1,Stasis(voxtra)  ; ACME
+exten => +265999000002,1,Stasis(voxtra)  ; Beta
+exten => _X.,1,Stasis(voxtra)            ; everything else
+```
+
+The dialed number (`+265999000001`) becomes `call.called_number` on the
+session, which the router matches against `@app.route(extension="...")`.
+
+### Reload the dialplan
+
+```bash
+asterisk -rx "dialplan reload"
+```
+
+Voxtra also exposes
+[`TenantProvisioner.reload_asterisk()`](/voxtra/reference/provisioning) for
+programmatic reloads via ARI.
+
+### The handler
+
+```python
+from voxtra import VoxtraApp
+
+app = VoxtraApp(ari_url="...", ari_user="...", ari_password="...")
+
+@app.route(extension="+265999000001")
+async def acme_inbound(call):
+    await call.answer()
+    await call.play_file("acme-greeting")
+    digit = await call.listen_dtmf(timeout=5)
+    if digit == "1":
+        await call.transfer_to_queue("acme-support")
+    else:
+        await call.play_file("vm-nobodyavail")
+        await call.hangup()
+
+@app.default()
+async def fallback(call):
+    await call.answer()
+    await call.play_file("vm-goodbye")
+    await call.hangup()
+
+app.run()
+```
+
+## Outbound calls
+
+### Stasis-routed origination
+
+`VoxtraApp.originate` creates an outbound call that lands directly in
+your Stasis app:
+
+```python
+import asyncio
+
+async def main():
+    await app.start()
+
+    call = await app.originate(
+        endpoint="PJSIP/+265999123456@my-trunk",
+        caller_id="+265888000001",
+        timeout=30,
+    )
+
+    await call.answer()
+    await call.say("Hi, this is Acme calling.")
+    await call.hangup()
+
+    await app.stop()
+
+asyncio.run(main())
+```
+
+The returned `CallSession` works identically to an inbound one — same
+`answer`, `say`, `listen`, etc.
+
+### Dialplan-routed origination
+
+When you want the outbound call to enter your existing dialplan
+(necessary if downstream logic reads channel variables or hooks the
+call into routing rules), use the lower-level `ARIClient.originate`
+with `context=` and `extension=`:
+
+```python
+channel = await app.ari.originate(
+    endpoint="PJSIP/+265999123456@my-trunk",
+    app=None,                       # disable Stasis routing
+    context="from-trunk-out",
+    extension="+265999123456",
+    caller_id="+265888000001",
+    variables={
+        "MY_CALL_ID": "abc-123",
+        "MY_RECORD": "1",
+    },
+)
+```
+
+The dialplan can read `${MY_CALL_ID}` and `${MY_RECORD}`, and your
+existing logic continues to fire on every outbound call.
+
+<Callout type="info">
+  This is the mode Luso8 uses in production — the dialplan reads
+  `LUSO8_*` channel variables and bridges the call into a LiveKit room
+  for AI handling. See the
+  [Luso8 production deployment](/voxtra/examples) example.
+</Callout>
+
+### Channel variables
+
+Voxtra serializes the `variables=` dict to the ARI `variables` field
+(JSON-wrapped, as ARI requires). All values are stringified, so:
+
+```python
+await app.ari.originate(
+    endpoint="PJSIP/+265999@trunk",
+    context="from-trunk-out",
+    extension="+265999",
+    variables={
+        "TENANT_ID": "acme",
+        "RECORD_CALL": "1",
+        "OBJECTIVE": "Confirm appointment for Tuesday",
+    },
+)
+```
+
+In dialplan:
+
+```ini
+[from-trunk-out]
+exten => _+X.,1,NoOp(Outbound for ${TENANT_ID})
+ same => n,GotoIf($["${RECORD_CALL}" = "1"]?record:dial)
+ same => n(record),MixMonitor(${UNIQUEID}.wav)
+ same => n(dial),Dial(PJSIP/${EXTEN}@trunk-out,30)
+ same => n,Hangup()
+```
+
+## Outbound batches
+
+For dialer-style use cases — placing many calls in sequence with
+concurrency limits — combine `app.originate` with a semaphore:
+
+```python
+import asyncio
+
+async def dial_one(number, script):
+    call = await app.originate(
+        endpoint=f"PJSIP/{number}@my-trunk",
+        caller_id="+265888000001",
+    )
+    await call.answer()
+    await call.say(script)
+    await call.hangup()
+
+async def dial_batch(numbers, script, concurrency=10):
+    sem = asyncio.Semaphore(concurrency)
+
+    async def guarded(n):
+        async with sem:
+            try:
+                await dial_one(n, script)
+            except Exception as exc:
+                logger.warning("Failed to call %s: %s", n, exc)
+
+    await asyncio.gather(*[guarded(n) for n in numbers])
+```
+
+In production you'll want call-state tracking, retries, and pacing —
+Luso8's batch implementation in
+[`asterisk.py`](https://github.com/rexplore-ai/luso8/blob/master/luso8.backend/app/api/v1/endpoints/asterisk.py)
+is a good starting point.
+
+## Hangup detection
+
+Voxtra dispatches `CALL_ENDED` when *any* of:
+
+1. The far side hangs up (ARI `StasisEnd`, `ChannelDestroyed`).
+2. The AudioSocket connection drops (`FRAME_HANGUP`, EOF, error).
+3. Your handler calls `call.hangup()`.
+
+Exactly one `CALL_ENDED` is dispatched per session — duplicates are
+deduped. Register cleanup via `call.on_hangup`:
+
+```python
+@call.on_hangup
+async def cleanup():
+    await persist(call.id)
+```
+
+## Common patterns
+
+<Tabs items={['Greeting', 'IVR menu', 'Survey']}>
+<Tabs.Tab>
+```python
+@app.default()
+async def handle(call):
+    await call.answer()
+    await call.play_file("welcome-prompt")
+    await call.hangup()
+```
+</Tabs.Tab>
+<Tabs.Tab>
+```python
+@app.default()
+async def handle(call):
+    await call.answer()
+    while True:
+        await call.say("Press 1 for sales, 2 for support, 3 to leave a message.")
+        digit = await call.listen_dtmf(timeout=5)
+        if digit == "1":
+            await call.transfer_to_queue("sales")
+            return
+        if digit == "2":
+            await call.transfer_to_queue("support")
+            return
+        if digit == "3":
+            await call.play_file("vm-intro")
+            await call.record_start("voicemail")
+            await asyncio.sleep(60)
+            await call.record_stop()
+            await call.hangup()
+            return
+        await call.say("Invalid choice.")
+```
+</Tabs.Tab>
+<Tabs.Tab>
+```python
+@app.default()
+async def handle(call):
+    await call.answer()
+    answers = []
+
+    for question in ["How likely are you to recommend us, 1 to 9?",
+                     "What's the main reason for that score?"]:
+        await call.say(question)
+        if "score" in question.lower():
+            answer = await call.listen_dtmf(timeout=10)
+        else:
+            user = await call.listen(timeout=15)
+            answer = user.text if user else ""
+        answers.append(answer)
+
+    await save_survey(call.caller_id, answers)
+    await call.say("Thanks for your feedback.")
+    await call.hangup()
+```
+</Tabs.Tab>
+</Tabs>

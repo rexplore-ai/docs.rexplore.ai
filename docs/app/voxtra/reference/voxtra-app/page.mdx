@@ -1,0 +1,243 @@
+---
+title: VoxtraApp
+description:
+  API reference for VoxtraApp — constructor, classmethods, decorators,
+  and lifecycle. The orchestrator at the centre of every Voxtra
+  application.
+---
+
+# `VoxtraApp`
+
+```python
+from voxtra import VoxtraApp
+```
+
+The orchestrator. Owns the telephony adapter, runs the event loop,
+dispatches calls to handlers, and (optionally) auto-wires the AI
+pipeline and webhook emitter.
+
+## Constructor
+
+```python
+VoxtraApp(
+    ari_url: str = "",
+    ari_user: str = "",
+    ari_password: str = "",
+    *,
+    app_name: str = "voxtra",
+    reconnect_interval: float = 5.0,
+    debug: bool = False,
+    router: Router | None = None,
+    telephony: BaseTelephonyAdapter | None = None,
+    stt: BaseSTT | None = None,
+    llm: BaseAgent | None = None,
+    tts: BaseTTS | None = None,
+    vad: BaseVAD | None = None,
+    webhook: BackendWebhook | None = None,
+    recording_sink: RecordingSink | None = None,
+)
+```
+
+| Param                | Default            | Notes                                                              |
+| -------------------- | ------------------ | ------------------------------------------------------------------ |
+| `ari_url`            | `$VOXTRA_ARI_URL` or `http://localhost:8088` | Asterisk REST URL. Used only when `telephony` is None. |
+| `ari_user`           | `$VOXTRA_ARI_USER` or `asterisk` | ARI username.                                       |
+| `ari_password`       | `$VOXTRA_ARI_PASSWORD`           | ARI password.                                        |
+| `app_name`           | `voxtra`           | Stasis app name. **Must be unique per tenant** in multi-tenant deployments. |
+| `reconnect_interval` | `5.0` seconds      | Backoff between WS reconnect attempts.                              |
+| `debug`              | `False`            | Enable DEBUG-level logging.                                         |
+| `router`             | new `Router()`     | Pass an existing router for advanced composition.                   |
+| `telephony`          | lazy `AsteriskAdapter` | Inject a custom adapter (e.g. `LiveKitAdapter`).               |
+| `stt` / `llm` / `tts` / `vad` | None      | When all three of stt/llm/tts are set, every session gets an auto-wired pipeline. |
+| `webhook`            | None               | Configure to fan events out to your backend.                        |
+| `recording_sink`     | None               | Default sink for `record_start()`. Per-call override available.     |
+
+## Classmethods
+
+### `with_asterisk()`
+
+Sugar for "give me a Voxtra app with an Asterisk backend":
+
+```python
+app = VoxtraApp.with_asterisk(
+    ari_url="http://pbx:8088",
+    ari_user="asterisk",
+    ari_password="secret",
+    app_name="voxtra-acme",
+)
+```
+
+Equivalent to `VoxtraApp(telephony=AsteriskAdapter(...))`.
+
+### `from_config(VoxtraConfig)`
+
+Build from a Pydantic config object. The telephony adapter is resolved
+from the registry by name. AI providers are *not* auto-instantiated —
+you pass them in or build them post-construction.
+
+When `config.backend.webhook.url` is set, a `BackendWebhook` is
+constructed automatically.
+
+```python
+from voxtra.config import VoxtraConfig
+config = VoxtraConfig.from_yaml("voxtra.yaml")
+app = VoxtraApp.from_config(config)
+```
+
+### `from_yaml(path)`
+
+Shortcut for `from_config(VoxtraConfig.from_yaml(path))`.
+
+```python
+app = VoxtraApp.from_yaml("voxtra.yaml")
+```
+
+This is what `voxtra start -c voxtra.yaml` uses internally.
+
+## Decorators
+
+### `@app.route()`
+
+Register a static-route handler:
+
+```python
+@app.route(extension="1000")
+async def support(call):
+    ...
+
+@app.route(number="+265888111111", metadata={"vip": True})
+async def vip(call):
+    ...
+```
+
+Parameters: `extension`, `number`, `name`, `metadata`. Metadata is
+merged into `call.metadata` when the route fires.
+
+### `@app.default()`
+
+Register the fallback handler:
+
+```python
+@app.default()
+async def fallback(call):
+    ...
+```
+
+`@app.default_route()` is an alias preserved for backward compat.
+
+### `@app.on_call()` (deprecated)
+
+Replaced by `@app.route()` and `@app.default()`. Still works for one
+more minor version, with a `DeprecationWarning`.
+
+### `@app.on_startup()` / `@app.on_shutdown()`
+
+Register async lifecycle hooks:
+
+```python
+@app.on_startup
+async def init():
+    await db.connect()
+
+@app.on_shutdown
+async def cleanup():
+    await db.close()
+```
+
+## Outbound calling
+
+### `originate(endpoint, *, caller_id="", timeout=30, variables=None)`
+
+Originate an outbound call into the configured Stasis app:
+
+```python
+call = await app.originate(
+    endpoint="PJSIP/+265999@my-trunk",
+    caller_id="+265888000001",
+    timeout=30,
+    variables={"PURPOSE": "appointment_confirmation"},
+)
+await call.answer()
+await call.say("Hi, this is Acme calling.")
+```
+
+Returns a `CallSession`. For dialplan-mode origination (so existing
+dialplan logic fires), use `app.ari.originate(... context=..., extension=...)`
+directly — see [`ARIClient.originate`](/voxtra/reference/ari-client#originate).
+
+## Lifecycle
+
+### `start()`
+
+Async start. Connects the telephony adapter, runs startup hooks,
+begins dispatching events. Blocks until `stop()` is called.
+
+```python
+async def main():
+    await app.start()
+
+asyncio.run(main())
+```
+
+### `stop()`
+
+Graceful shutdown. Hangs up active sessions, disconnects the adapter,
+closes the webhook HTTP client, runs shutdown hooks.
+
+```python
+await app.stop()
+```
+
+### `run()`
+
+Blocking helper for standalone applications. Sets up SIGINT/SIGTERM
+handlers and calls `start()` in a fresh event loop.
+
+```python
+app.run()
+```
+
+### `run_async()`
+
+Use when integrating with an existing async app (e.g. a FastAPI server).
+Equivalent to `await app.start()`.
+
+```python
+async def main():
+    await app.run_async()
+```
+
+## Session management
+
+### `app.active_sessions`
+
+A snapshot dict (`channel_id → CallSession`) of every currently active
+session. Read-only (mutating it doesn't affect the framework's own
+session map).
+
+### `app.get_session(session_id)`
+
+Look up a session by its ID. Returns `None` if not present.
+
+## Properties
+
+| Property             | Type                          | Notes                                          |
+| -------------------- | ----------------------------- | ---------------------------------------------- |
+| `app.app_name`       | `str`                         | Stasis app name.                               |
+| `app.router`         | `Router`                      | The active router.                             |
+| `app.telephony`      | `BaseTelephonyAdapter`        | The active backend (lazy-built `AsteriskAdapter` if not provided). |
+| `app.ari`            | `ARIClient`                   | The underlying ARI client. Raises if not connected. |
+| `app.is_running`     | `bool`                        | True between `start()` and `stop()`.           |
+
+## CLI: `voxtra start`
+
+If you `pip install voxtra`, the `voxtra` CLI is on your PATH:
+
+```bash
+voxtra start -c voxtra.yaml
+voxtra check                    # validate config + connectivity
+voxtra info                     # print version + provider list
+voxtra init                     # scaffold a new app
+```
+
+`voxtra start` is `VoxtraApp.from_yaml(path).run()` under the hood.

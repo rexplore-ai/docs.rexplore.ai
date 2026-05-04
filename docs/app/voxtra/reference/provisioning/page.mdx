@@ -1,0 +1,311 @@
+---
+title: TenantProvisioner
+description:
+  API reference for TenantProvisioner — generates Asterisk config
+  fragments for multi-tenant SaaS deployments and triggers live
+  reload via ARI.
+---
+
+# `TenantProvisioner`
+
+```python
+from voxtra.provisioning.provisioner import (
+    TenantConfig,
+    TenantProvisioner,
+)
+from voxtra.types import SIPTrunk
+```
+
+Generates per-tenant Asterisk configuration fragments and triggers
+live reloads via ARI. The primary primitive for hosting multi-tenant
+SaaS on a shared Asterisk cluster.
+
+For the conceptual overview, see the
+[Multi-tenant guide](/voxtra/guides/multi-tenant).
+
+## `TenantConfig`
+
+The input model. One per tenant.
+
+```python
+class TenantConfig(BaseModel):
+    tenant_id: str
+    tenant_name: str = ""
+    ari_app_name: str = ""        # auto-generated if empty
+    ari_username: str = ""        # auto-generated if empty
+    ari_password: str = ""        # auto-generated if empty (32-char random)
+    sip_trunk: SIPTrunk | None = None
+    dids: list[str] = []          # DIDs assigned to this tenant
+    context: str = ""             # dialplan context, auto-generated if empty
+    max_channels: int = 10        # soft channel cap
+    audiosocket_host: str = "127.0.0.1"
+    audiosocket_port: int = 0     # 0 = auto-assign
+```
+
+Auto-generated names follow the pattern `voxtra-{tenant_id}` for the
+ARI app and username, and `voxtra-{tenant_id}-inbound` for the dialplan
+context.
+
+```python
+config = TenantConfig(tenant_id="acme-corp")
+config.ari_app_name      # "voxtra-acme-corp"
+config.ari_username      # "voxtra-acme-corp"
+config.context           # "voxtra-acme-corp-inbound"
+```
+
+## `SIPTrunk`
+
+```python
+class SIPTrunk(BaseModel):
+    host: str
+    username: str
+    password: str
+    port: int = 5060
+    transport: str = "udp"      # udp | tcp | tls
+    realm: str = ""
+    codecs: list[str] = []
+    did: str = ""               # caller-ID for outbound
+```
+
+## `TenantProvisioner`
+
+### Constructor
+
+```python
+TenantProvisioner(output_dir: str | Path = "/etc/asterisk/voxtra.d")
+```
+
+`output_dir` is where the generated `.conf` fragments are written.
+Your top-level Asterisk configs `#include` files in this directory.
+
+### `provision(tenant: TenantConfig) → dict[str, str]`
+
+Generate the fragments. Returns a dict mapping filename to content.
+**Does not write to disk** — pair with `write_files()`.
+
+```python
+files = provisioner.provision(tenant)
+# files == {
+#   "ari_acme-corp.conf": "...",
+#   "pjsip_acme-corp.conf": "...",      # only if sip_trunk set
+#   "extensions_acme-corp.conf": "...",
+# }
+```
+
+### `write_files(files: dict[str, str]) → list[Path]`
+
+Write the fragments to `output_dir`. Creates the directory if missing.
+Returns the paths of the written files.
+
+```python
+paths = provisioner.write_files(files)
+# paths == [
+#   Path("/etc/asterisk/voxtra.d/ari_acme-corp.conf"),
+#   Path("/etc/asterisk/voxtra.d/pjsip_acme-corp.conf"),
+#   Path("/etc/asterisk/voxtra.d/extensions_acme-corp.conf"),
+# ]
+```
+
+### `deprovision(tenant_id: str) → list[Path]`
+
+Remove the fragments for a tenant. Returns the paths that were
+deleted. Safe to call when files don't exist (returns empty list).
+
+```python
+removed = provisioner.deprovision("acme-corp")
+```
+
+### `await reload_asterisk(ari, modules=None) → list[str]`
+
+Reload Asterisk so the new fragments take effect. Issues
+`PUT /ari/asterisk/modules/{module}` for each module — by default
+`res_pjsip.so`, `pbx_config.so`, and `res_ari.so` (the three modules
+whose configs the provisioner touches).
+
+```python
+ari = ARIClient(base_url="http://pbx:8088", username="...", password="...")
+await ari.connect()
+
+succeeded = await provisioner.reload_asterisk(ari)
+# succeeded == ["res_pjsip.so", "pbx_config.so", "res_ari.so"]
+```
+
+Per-module failures are logged at WARNING and skipped — partial
+reloads are valid. The method returns the list of modules that
+reloaded successfully.
+
+To reload only specific modules:
+
+```python
+await provisioner.reload_asterisk(ari, modules=["res_pjsip.so"])
+```
+
+### `DEFAULT_RELOAD_MODULES`
+
+Class constant — the default module list for `reload_asterisk()`.
+
+```python
+TenantProvisioner.DEFAULT_RELOAD_MODULES
+# ("res_pjsip.so", "pbx_config.so", "res_ari.so")
+```
+
+## File layout
+
+After provisioning two tenants, `output_dir` looks like:
+
+```
+/etc/asterisk/voxtra.d/
+├── ari_acme-corp.conf
+├── ari_beta-inc.conf
+├── extensions_acme-corp.conf
+├── extensions_beta-inc.conf
+├── pjsip_acme-corp.conf
+└── pjsip_beta-inc.conf
+```
+
+Top-level `extensions.conf`, `pjsip.conf`, and `ari.conf` use
+glob includes:
+
+```ini filename="/etc/asterisk/extensions.conf"
+#include "voxtra.d/extensions_*.conf"
+```
+
+```ini filename="/etc/asterisk/pjsip.conf"
+#include "voxtra.d/pjsip_*.conf"
+```
+
+```ini filename="/etc/asterisk/ari.conf"
+#include "voxtra.d/ari_*.conf"
+```
+
+## Generated content
+
+### `ari_{slug}.conf`
+
+```ini
+; Voxtra ARI user for tenant: ACME Corp
+; Auto-generated — do not edit manually
+
+[voxtra-acme-corp]
+type = user
+read_only = no
+password = <random>
+password_format = plain
+```
+
+### `pjsip_{slug}.conf`
+
+```ini
+; Voxtra SIP trunk for tenant: ACME Corp
+
+[voxtra-acme-corp-trunk-auth]
+type = auth
+auth_type = userpass
+username = acme
+password = s3cret
+realm = sip.carrier.com
+
+[voxtra-acme-corp-trunk-aor]
+type = aor
+contact = sip:sip.carrier.com:5060
+qualify_frequency = 60
+
+[voxtra-acme-corp-trunk]
+type = endpoint
+transport = transport-udp
+context = voxtra-acme-corp-inbound
+disallow = all
+allow = ulaw/alaw
+outbound_auth = voxtra-acme-corp-trunk-auth
+aors = voxtra-acme-corp-trunk-aor
+direct_media = no
+rtp_symmetric = yes
+force_rport = yes
+rewrite_contact = yes
+
+[voxtra-acme-corp-trunk-reg]
+type = registration
+transport = transport-udp
+outbound_auth = voxtra-acme-corp-trunk-auth
+server_uri = sip:sip.carrier.com:5060
+client_uri = sip:acme@sip.carrier.com:5060
+retry_interval = 60
+expiration = 3600
+
+[voxtra-acme-corp-trunk-identify]
+type = identify
+endpoint = voxtra-acme-corp-trunk
+match = sip.carrier.com
+```
+
+### `extensions_{slug}.conf`
+
+```ini
+; Voxtra dialplan for tenant: ACME Corp
+
+[voxtra-acme-corp-inbound]
+exten => _X.,1,NoOp(Voxtra inbound for tenant acme-corp)
+ same => n,Stasis(voxtra-acme-corp)
+ same => n,Hangup()
+
+exten => 265999123456,1,NoOp(Voxtra DID +265999123456 for tenant acme-corp)
+ same => n,Stasis(voxtra-acme-corp)
+ same => n,Hangup()
+
+[voxtra-acme-corp-queues]
+exten => _X.,1,NoOp(Voxtra queue handoff for acme-corp)
+ same => n,Queue(${EXTEN})
+ same => n,Hangup()
+
+[voxtra-acme-corp-outbound]
+exten => _+X.,1,NoOp(Voxtra outbound for acme-corp)
+ same => n,Dial(PJSIP/${EXTEN}@voxtra-acme-corp-trunk,30)
+ same => n,Hangup()
+```
+
+## End-to-end flow
+
+```python
+from voxtra import ARIClient
+from voxtra.provisioning.provisioner import TenantConfig, TenantProvisioner
+from voxtra.types import SIPTrunk
+
+# 1. Build the tenant config from your signup form / API request.
+tenant = TenantConfig(
+    tenant_id="acme-corp",
+    tenant_name="ACME Corp",
+    sip_trunk=SIPTrunk(
+        host="sip.carrier.com",
+        username="acme",
+        password=os.environ["ACME_TRUNK_PW"],
+        did="+265999123456",
+    ),
+    dids=["+265999123456"],
+    max_channels=20,
+)
+
+# 2. Provision config fragments.
+provisioner = TenantProvisioner(output_dir="/etc/asterisk/voxtra.d")
+files = provisioner.provision(tenant)
+provisioner.write_files(files)
+
+# 3. Live-reload Asterisk via ARI.
+ari = ARIClient(
+    base_url="http://pbx:8088",
+    username=os.environ["ADMIN_ARI_USER"],
+    password=os.environ["ADMIN_ARI_PW"],
+)
+await ari.connect()
+await provisioner.reload_asterisk(ari)
+
+# 4. Persist tenant.ari_password somewhere safe — your runtime
+#    VoxtraApp will need it.
+await db.tenants.set_ari_credentials(
+    tenant_id=tenant.tenant_id,
+    ari_user=tenant.ari_username,
+    ari_password=tenant.ari_password,  # encrypt at rest
+    app_name=tenant.ari_app_name,
+)
+
+# 5. Spawn the tenant runtime (k8s job, Cloud Run, systemd, ...).
+```

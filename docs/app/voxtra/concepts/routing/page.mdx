@@ -1,0 +1,198 @@
+---
+title: Routing
+description:
+  Map inbound DIDs and extensions to async handlers using Voxtra's
+  declarative router. Static routes, number patterns, metadata, and
+  fallback handling.
+---
+
+# Routing
+
+Voxtra dispatches every inbound call through a `Router`. You register
+handlers with decorators and the framework picks the right one based on
+the called extension or number.
+
+## Static routes
+
+The simplest case — match an exact extension or number:
+
+```python
+@app.route(extension="1000")
+async def support(call):
+    ...
+
+@app.route(number="+265888111111")
+async def vip(call):
+    ...
+```
+
+`extension` matches the dialed extension exposed by the dialplan
+(`channel.dialplan_exten`). `number` matches `caller_id` — the calling
+party. You can pass either, both, or neither (combined with `name=`).
+
+## Default handler
+
+Always register a default. It's the fallback when no static route matches.
+
+```python
+@app.default()
+async def fallback(call):
+    await call.answer()
+    await call.play_file("vm-nobodyavail")
+    await call.hangup()
+```
+
+`@app.default_route()` is an alias kept for backward compatibility.
+Without a default, unmatched calls are hung up immediately and a warning
+is logged.
+
+## Metadata on routes
+
+Attach arbitrary metadata to a route. It's merged into `call.metadata`
+when that route fires:
+
+```python
+@app.route(extension="1000", metadata={"queue": "support", "priority": "high"})
+async def support(call):
+    queue = call.metadata["queue"]            # "support"
+    priority = call.metadata["priority"]      # "high"
+    await call.transfer_to_queue(queue)
+```
+
+This is the cleanest way to keep per-route configuration co-located
+with the handler.
+
+## Resolution order
+
+When a call comes in, the router checks routes in the order they were
+registered:
+
+1. **Static routes** — first one whose `extension`/`number` matches.
+2. **Dispatch rules** (advanced — see below).
+3. **Default handler** if registered.
+4. Otherwise: hang up with a warning.
+
+Static-route metadata is merged onto the session before the handler
+runs. Dispatch-rule and default-handler dispatches don't carry metadata.
+
+## Dispatch rules
+
+For dynamic routing — for example, "any number ending in `0` goes to
+sales" — register a `DispatchRule`:
+
+```python
+from voxtra.router import DispatchRule
+
+class SalesRule(DispatchRule):
+    def matches(self, *, extension, number):
+        return number and number.endswith("0")
+
+    async def handler(self, call):
+        await call.answer()
+        await call.say("Sales department.")
+        ...
+
+app.router.dispatch_rules.append(SalesRule())
+```
+
+Dispatch rules run after static routes and before the default. Use them
+sparingly — most cases are clearer as static routes plus business logic
+inside the handler.
+
+## Programmatic registration
+
+You don't have to use decorators. The same registrations work
+imperatively, which is useful when handlers come from configuration:
+
+```python
+async def support_handler(call):
+    ...
+
+app.router.route(extension="1000")(support_handler)
+app.router.default()(fallback_handler)
+```
+
+This pattern composes well with `VoxtraApp.from_config(...)` —
+configuration drives which handlers register.
+
+## Multi-tenant: app-name namespacing
+
+Voxtra's primary multi-tenant primitive is the **Stasis app name**, not
+the router. One Asterisk cluster can host many `VoxtraApp` instances,
+each subscribed to its own Stasis app:
+
+```python
+acme = VoxtraApp(app_name="voxtra-acme", ari_url=..., ari_user=..., ari_password=...)
+beta = VoxtraApp(app_name="voxtra-beta", ari_url=..., ari_user=..., ari_password=...)
+```
+
+Each instance runs its own router and only sees calls dispatched to its
+Stasis app via `Stasis(voxtra-acme)` in the dialplan. See the
+[Multi-tenant guide](/voxtra/guides/multi-tenant) for `TenantProvisioner`,
+which auto-generates the dialplan, ARI user, and PJSIP fragments per
+tenant.
+
+## Inspection
+
+```python
+# All registered static routes
+app.router.routes  # list[Route]
+
+# All registered dispatch rules
+app.router.dispatch_rules  # list[DispatchRule]
+
+# The default handler (or None)
+app.router.default_handler
+```
+
+Useful in tests and admin endpoints that surface "which DIDs are wired?".
+
+## Common patterns
+
+### Per-tenant DID routing
+
+```python
+@app.route(number="+265999000001", metadata={"tenant_id": "acme"})
+async def acme_inbound(call):
+    await dispatch_to_tenant_workflow(call, call.metadata["tenant_id"])
+
+@app.route(number="+265999000002", metadata={"tenant_id": "beta"})
+async def beta_inbound(call):
+    await dispatch_to_tenant_workflow(call, call.metadata["tenant_id"])
+```
+
+### IVR menu
+
+```python
+@app.default()
+async def menu(call):
+    await call.answer()
+    while True:
+        await call.say("Press 1 for sales, 2 for support, 0 for an agent.")
+        digit = await call.listen_dtmf(timeout=5)
+        if digit == "1":
+            await call.transfer_to_queue("sales")
+            return
+        if digit == "2":
+            await call.transfer_to_queue("support")
+            return
+        if digit == "0":
+            await call.transfer_to_queue("agents")
+            return
+        await call.say("Invalid choice, please try again.")
+```
+
+### One handler with sub-dispatch
+
+When you want a single entry point that branches on metadata:
+
+```python
+@app.route(extension="1000", metadata={"flow": "support"})
+@app.route(extension="2000", metadata={"flow": "sales"})
+async def shared(call):
+    flow = call.metadata.get("flow", "default")
+    await getattr(handlers, flow)(call)
+```
+
+(Note: `@app.route` returns the original function so stacking decorators
+works naturally.)

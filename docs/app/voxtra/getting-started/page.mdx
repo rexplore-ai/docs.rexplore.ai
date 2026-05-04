@@ -1,0 +1,246 @@
+---
+title: Getting Started
+description:
+  Install Voxtra, point it at an Asterisk PBX, and place your first call.
+---
+
+import { Callout, Steps, Tabs } from 'nextra/components'
+
+# Getting Started
+
+This page walks through installing Voxtra, wiring it to a running Asterisk
+PBX, and placing your first inbound and outbound calls. By the end you'll
+have a working `VoxtraApp` that picks up calls and runs your handler.
+
+## Prerequisites
+
+You'll need:
+
+- **Python 3.11+**.
+- **Asterisk 18+** with ARI enabled (`asterisk-ari`) and an HTTP/WebSocket
+  endpoint reachable from your Voxtra process.
+- An **ARI user** with permission to control Stasis applications.
+- For the AI-agent path: API keys for your STT, LLM, and TTS providers
+  (Deepgram, OpenAI, ElevenLabs are first-class; others register via the
+  [provider registry](/voxtra/concepts/architecture)).
+
+<Callout type="info">
+  No Asterisk yet? Try the
+  [`docker-compose` example](https://github.com/rexplore-ai/voxtra/tree/main/examples)
+  in the Voxtra repo for a complete local stack.
+</Callout>
+
+## Install
+
+<Tabs items={['pip', 'poetry', 'uv']}>
+  <Tabs.Tab>
+```bash
+pip install voxtra
+```
+  </Tabs.Tab>
+  <Tabs.Tab>
+```bash
+poetry add voxtra
+```
+  </Tabs.Tab>
+  <Tabs.Tab>
+```bash
+uv add voxtra
+```
+  </Tabs.Tab>
+</Tabs>
+
+Optional extras enable individual provider integrations:
+
+```bash
+pip install "voxtra[deepgram,openai,elevenlabs]"   # AI providers
+pip install "voxtra[provisioning]"                  # Multi-tenant config
+pip install "voxtra[all]"                           # Everything
+```
+
+## Hello, call
+
+The smallest possible Voxtra app:
+
+```python filename="hello.py"
+from voxtra import VoxtraApp
+
+app = VoxtraApp(
+    ari_url="http://pbx.example.com:8088",
+    ari_user="asterisk",
+    ari_password="secret",
+)
+
+@app.default()
+async def handle(call):
+    await call.answer()
+    await call.play_file("hello-world")
+    await call.hangup()
+
+app.run()
+```
+
+Run it:
+
+```bash
+python hello.py
+```
+
+Voxtra connects to ARI, subscribes to Stasis events for the default app
+name (`voxtra`), and waits. Call any number routed to the
+`Stasis(voxtra)` app from your dialplan and the handler fires.
+
+## Configure your Asterisk dialplan
+
+Voxtra needs incoming calls handed off to its Stasis app. Add this to
+`extensions.conf` (or wherever your inbound trunk routes to):
+
+```ini filename="/etc/asterisk/extensions.conf"
+[from-trunk]
+exten => _X.,1,NoOp(Inbound to Voxtra)
+ same => n,Stasis(voxtra)
+ same => n,Hangup()
+```
+
+Reload the dialplan:
+
+```bash
+asterisk -rx "dialplan reload"
+```
+
+Now any inbound call entering `from-trunk` lands in your `@app.default()`
+handler.
+
+<Callout type="info">
+  Need per-tenant isolation? See
+  [Multi-tenant provisioning](/voxtra/guides/multi-tenant) — `TenantProvisioner`
+  generates the dialplan, ARI user, and PJSIP fragments automatically.
+</Callout>
+
+## Add routing
+
+Static-route handlers respond to specific extensions or numbers:
+
+```python {7-13}
+from voxtra import VoxtraApp
+
+app = VoxtraApp(ari_url="...", ari_user="...", ari_password="...")
+
+@app.route(extension="1000")
+async def support(call):
+    await call.answer()
+    await call.play_file("support-greeting")
+    await call.hangup()
+
+@app.route(extension="2000")
+async def sales(call):
+    await call.answer()
+    await call.play_file("sales-greeting")
+    await call.hangup()
+
+@app.default()
+async def fallback(call):
+    await call.answer()
+    await call.play_file("vm-nobodyavail")
+    await call.hangup()
+
+app.run()
+```
+
+See [Routing](/voxtra/concepts/routing) for number patterns, metadata, and
+dispatch rules.
+
+## Place an outbound call
+
+`VoxtraApp.originate` returns the same `CallSession` your inbound handler
+gets, but for a call you initiate:
+
+```python
+import asyncio
+from voxtra import VoxtraApp
+
+app = VoxtraApp(ari_url="...", ari_user="...", ari_password="...")
+
+async def call_alice():
+    await app.start()
+    call = await app.originate(
+        endpoint="PJSIP/+265999123456@my-trunk",
+        caller_id="+265888000001",
+    )
+    # Wait for the call to connect, then play a recorded message.
+    await call.answer()
+    await call.play_file("important-message")
+    await call.hangup()
+    await app.stop()
+
+asyncio.run(call_alice())
+```
+
+For dialplan-routed origination (when you want the call to enter your
+existing dialplan instead of going straight to Stasis), use the lower-level
+[`ARIClient.originate`](/voxtra/reference/ari-client#originate) with
+`context=` and `extension=`.
+
+## Add an AI voice agent
+
+Pass STT, LLM, and TTS to `VoxtraApp` and Voxtra auto-wires a
+[`VoicePipeline`](/voxtra/guides/ai-voice-agent) into every session:
+
+```python
+from voxtra import VoxtraApp
+from voxtra.ai.stt.deepgram import DeepgramSTT
+from voxtra.ai.tts.elevenlabs import ElevenLabsTTS
+from voxtra.ai.llm.openai import OpenAIAgent
+
+app = VoxtraApp(
+    ari_url="http://pbx:8088",
+    ari_user="asterisk",
+    ari_password="secret",
+    stt=DeepgramSTT(api_key="..."),
+    tts=ElevenLabsTTS(api_key="...", voice_id="..."),
+    llm=OpenAIAgent(api_key="...", system_prompt="You are a helpful agent."),
+)
+
+@app.default()
+async def handle(call):
+    await call.answer()
+    await call.say("Hi! How can I help?")
+
+    while True:
+        user = await call.listen(timeout=10)
+        if not user:
+            break
+        reply = await call.agent.respond(user.text)
+        await call.say(reply.text)
+
+    await call.hangup()
+
+app.run()
+```
+
+The full guide — including barge-in handling, tool calls, and per-session
+context — is at [AI voice agent](/voxtra/guides/ai-voice-agent).
+
+## Where to go next
+
+<Steps>
+
+### Read the [architecture overview](/voxtra/concepts/architecture)
+
+Understand how ARI events flow into your handler and back out as audio.
+
+### Subscribe your backend with [webhooks](/voxtra/guides/webhooks)
+
+`BackendWebhook` POSTs every call event to your service so CRM, billing,
+and analytics stay in sync.
+
+### Plug in [recording](/voxtra/guides/recording)
+
+Drop in a `RecordingSink` to upload finished calls to GCS, S3, or your
+own storage.
+
+### Browse the [examples gallery](/voxtra/examples)
+
+Working applications: IVR menu, sales bot, support bot, multi-tenant SaaS.
+
+</Steps>

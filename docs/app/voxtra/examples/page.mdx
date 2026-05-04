@@ -1,0 +1,235 @@
+---
+title: Examples
+description:
+  Working Voxtra applications — from a 10-line hello-world to a
+  production multi-tenant SaaS deployment.
+---
+
+import { Cards } from 'nextra/components'
+
+# Examples
+
+The [`examples/`](https://github.com/rexplore-ai/voxtra/tree/main/examples)
+directory in the Voxtra repo contains complete, runnable applications.
+Each one is intentionally small — focused on one pattern at a time.
+
+## Gallery
+
+<Cards num={2}>
+  <Cards.Card arrow title="Minimal" href="https://github.com/rexplore-ai/voxtra/tree/main/examples/minimal">
+    <>10 lines: answer, play "hello world", hang up. The smallest possible Voxtra app.</>
+  </Cards.Card>
+  <Cards.Card arrow title="IVR Menu" href="https://github.com/rexplore-ai/voxtra/tree/main/examples/ivr_menu">
+    <>DTMF-driven menu with sub-menus and queue transfer. No AI providers required.</>
+  </Cards.Card>
+  <Cards.Card arrow title="AI Agent" href="https://github.com/rexplore-ai/voxtra/tree/main/examples/ai_agent">
+    <>End-to-end voice agent with Deepgram + OpenAI + ElevenLabs. Barge-in, tool calls, recording.</>
+  </Cards.Card>
+  <Cards.Card arrow title="Sales Bot" href="https://github.com/rexplore-ai/voxtra/tree/main/examples/sales_bot">
+    <>Outbound sales dialer with structured pitch flow and disposition logging.</>
+  </Cards.Card>
+  <Cards.Card arrow title="Support Bot" href="https://github.com/rexplore-ai/voxtra/tree/main/examples/support_bot">
+    <>Inbound support agent with order-lookup tool and human handoff via bridging.</>
+  </Cards.Card>
+  <Cards.Card arrow title="Multi-tenant SaaS" href="https://github.com/rexplore-ai/voxtra/tree/main/examples/saas_multitenant">
+    <>One Asterisk cluster, many tenants. Uses TenantProvisioner and per-tenant Stasis apps.</>
+  </Cards.Card>
+</Cards>
+
+## Inline snippets
+
+### Hello, call
+
+```python
+from voxtra import VoxtraApp
+
+app = VoxtraApp(
+    ari_url="http://pbx:8088",
+    ari_user="asterisk",
+    ari_password="secret",
+)
+
+@app.default()
+async def handle(call):
+    await call.answer()
+    await call.play_file("hello-world")
+    await call.hangup()
+
+app.run()
+```
+
+### IVR with handoff
+
+```python
+@app.default()
+async def menu(call):
+    await call.answer()
+    await call.say("Press 1 for sales, 2 for support.")
+    digit = await call.listen_dtmf(timeout=5)
+    if digit == "1":
+        await call.transfer_to_queue("sales-queue")
+    elif digit == "2":
+        await call.transfer_to_queue("support-queue")
+    else:
+        await call.say("Goodbye.")
+        await call.hangup()
+```
+
+### Voice agent with tools
+
+```python
+from voxtra import VoxtraApp
+from voxtra.ai.stt.deepgram import DeepgramSTT
+from voxtra.ai.tts.elevenlabs import ElevenLabsTTS
+from voxtra.ai.llm.openai import OpenAIAgent
+
+app = VoxtraApp(
+    ari_url="...", ari_user="...", ari_password="...",
+    stt=DeepgramSTT(api_key="..."),
+    llm=OpenAIAgent(
+        api_key="...",
+        model="gpt-4o-mini",
+        system_prompt="You are a friendly customer-support agent for Acme.",
+        tools=[
+            {
+                "type": "function",
+                "function": {
+                    "name": "lookup_order",
+                    "description": "Fetch order details by ID.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {"order_id": {"type": "string"}},
+                        "required": ["order_id"],
+                    },
+                },
+            },
+        ],
+    ),
+    tts=ElevenLabsTTS(api_key="...", voice_id="..."),
+)
+
+@app.default()
+async def handle(call):
+    await call.answer()
+    await call.say("Acme support — how can I help?")
+
+    while call.state == "in-progress":
+        user = await call.listen(timeout=10)
+        if user is None:
+            await call.say("Are you still there?")
+            continue
+
+        reply = await call.agent.respond(user.text)
+
+        for tool in reply.tool_calls:
+            if tool["name"] == "lookup_order":
+                order = await db.fetch_order(tool["arguments"]["order_id"])
+                await call.agent.add_tool_result(tool["id"], result=str(order))
+                reply = await call.agent.respond("")
+
+        await call.say(reply.text)
+```
+
+### Outbound sales dialer
+
+```python
+async def dial_one(number, script):
+    call = await app.originate(
+        endpoint=f"PJSIP/{number}@my-trunk",
+        caller_id="+265888000001",
+    )
+    await call.answer()
+    await call.say(script)
+
+    user = await call.listen(timeout=15)
+    if user and "yes" in user.text.lower():
+        await call.transfer_to_queue("sales-queue")
+    else:
+        await call.say("Thanks. Goodbye.")
+        await call.hangup()
+
+async def dial_batch(numbers, script):
+    sem = asyncio.Semaphore(10)
+    async def guarded(n):
+        async with sem:
+            try:
+                await dial_one(n, script)
+            except Exception as exc:
+                logger.warning("Failed %s: %s", n, exc)
+    await asyncio.gather(*[guarded(n) for n in numbers])
+```
+
+### Multi-tenant onboarding
+
+```python
+from voxtra import ARIClient
+from voxtra.provisioning.provisioner import TenantConfig, TenantProvisioner
+from voxtra.types import SIPTrunk
+
+provisioner = TenantProvisioner()
+
+async def onboard_tenant(form):
+    tenant = TenantConfig(
+        tenant_id=form.org_slug,
+        tenant_name=form.org_name,
+        sip_trunk=SIPTrunk(
+            host=form.trunk_host,
+            username=form.trunk_user,
+            password=form.trunk_pw,
+            did=form.primary_did,
+        ),
+        dids=form.dids,
+    )
+
+    files = provisioner.provision(tenant)
+    provisioner.write_files(files)
+
+    ari = ARIClient(base_url="http://pbx:8088", username="admin", password="...")
+    await ari.connect()
+    await provisioner.reload_asterisk(ari)
+
+    await spawn_runtime_pod(tenant)
+```
+
+## Production reference: Luso8
+
+Voxtra powers the Luso8 Cloud call center end-to-end. Notable patterns:
+
+- **Dialplan-routed origination** so existing `LUSO8_*` channel-variable
+  logic continues to fire on every outbound call. See
+  [VoxtraARIClient.originate_call](https://github.com/rexplore-ai/luso8/blob/master/luso8.backend/app/services/voxtra_client.py).
+- **GCS recording sink** wrapping `gcs_recording_service.py` to upload
+  to Google Cloud Storage with signed-URL playback.
+- **Webhook receiver** at `/webhooks/asterisk` that drives the unified
+  `call_terminator` service — single source of truth for call-state
+  transitions across `CallSession`, `CallLog`, and `EngageConversation`
+  models.
+- **Celery reconciler** that periodically queries ARI and Telnyx APIs
+  to heal drift between Voxtra's view of call state and Luso8's
+  database.
+
+The full Luso8 backend is open in the
+[`rexplore-ai/luso8`](https://github.com/rexplore-ai/luso8) repo.
+
+## Run the examples locally
+
+Each example is a standalone Python file:
+
+```bash
+git clone https://github.com/rexplore-ai/voxtra.git
+cd voxtra
+pip install -e ".[all]"
+
+cd examples/ai_agent
+export DEEPGRAM_API_KEY=...
+export OPENAI_API_KEY=...
+export ELEVENLABS_API_KEY=...
+export VOXTRA_ARI_URL=http://pbx:8088
+export VOXTRA_ARI_USER=asterisk
+export VOXTRA_ARI_PASSWORD=secret
+
+python main.py
+```
+
+For a complete local stack including Asterisk, see the
+`examples/docker-compose.yml` in the Voxtra repo.

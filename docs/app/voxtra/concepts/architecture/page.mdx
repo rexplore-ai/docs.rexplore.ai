@@ -1,0 +1,216 @@
+---
+title: Architecture
+description:
+  How VoxtraApp, ARIClient, AudioSocket, and the voice pipeline fit
+  together to turn a SIP call into an async Python function call.
+---
+
+# Architecture
+
+Voxtra is built on four primitives. Once you understand how they
+compose, the rest of the API is mechanical.
+
+## The big picture
+
+```ascii
+       ┌────────────────────────────────┐
+       │ Caller / SIP trunk             │
+       └──────────────┬─────────────────┘
+                      │ SIP
+                      ▼
+        ┌─────────────────────────────┐
+        │  Asterisk PBX               │
+        │  - PJSIP transport          │
+        │  - Dialplan / Stasis app    │
+        │  - AudioSocket dialplan app │
+        └────┬────────────────────┬───┘
+             │ ARI                │ AudioSocket TCP
+             │ (HTTP + WS)        │ (μ-law / PCM frames)
+             ▼                    ▼
+   ┌────────────────────┐  ┌──────────────────────┐
+   │ ARIClient          │  │ AudioSocketServer    │
+   │ - HTTP control     │  │ - TCP accept loop    │
+   │ - WS event stream  │  │ - 4-byte framing     │
+   └────────┬───────────┘  └──────────┬───────────┘
+            │                         │
+            ▼                         ▼
+   ┌────────────────────────────────────────────┐
+   │ VoxtraApp                                  │
+   │ - Translates ARI events → VoxtraEvents     │
+   │ - Owns the Router (dispatch by ext/number) │
+   │ - Creates a CallSession per call           │
+   │ - Auto-wires VoicePipeline (if configured) │
+   │ - Fires BackendWebhook (if configured)     │
+   └─────────────────────┬──────────────────────┘
+                         │
+                         ▼
+              ┌──────────────────────┐
+              │ Your @app.route()    │
+              │ async def handler:   │
+              │   call.answer()      │
+              │   call.say(...)      │
+              │   call.listen(...)   │
+              └──────────────────────┘
+```
+
+## The four primitives
+
+### 1. `ARIClient`
+
+The lowest layer. Wraps Asterisk's REST Interface (HTTP) and Stasis event
+stream (WebSocket). Methods are 1:1 with ARI endpoints — `originate`,
+`answer_channel`, `hangup_channel`, `create_bridge`, `record_channel`,
+`reload_module`, etc.
+
+You rarely use this directly, but it's there when you need to hit ARI
+features Voxtra hasn't wrapped yet:
+
+```python
+from voxtra import ARIClient
+
+ari = ARIClient(base_url="http://pbx:8088", username="...", password="...")
+await ari.connect()
+modules = await ari.list_modules()           # raw ARI call
+await ari.reload_module("res_pjsip.so")
+```
+
+[Reference →](/voxtra/reference/ari-client)
+
+### 2. `AudioSocketServer`
+
+A TCP server that accepts AudioSocket connections from the Asterisk
+`AudioSocket()` dialplan app. Each connection is a `CallSession`'s media
+channel — frames in, frames out — without RTP or SRTP.
+
+The server runs on a port you choose (default: ephemeral) and is auto-
+started by `VoxtraApp` when audio operations are first used.
+
+### 3. `CallSession`
+
+The developer-facing handle. Every inbound call and every successful
+`originate()` produces one. It's what your `@app.route()` handler
+receives:
+
+```python
+@app.default()
+async def handle(call):  # ← call: CallSession
+    await call.answer()
+    digit = await call.listen_dtmf(timeout=5)
+    if digit == "1":
+        await call.transfer_to_queue("support")
+    else:
+        await call.bridge_with(other_session)
+```
+
+`CallSession` exposes:
+
+- **Lifecycle:** `answer`, `hangup`, `hold`, `unhold`, `transfer_to`.
+- **Audio:** `audio_stream()`, `send_audio()`, `play_file()`.
+- **DTMF:** `listen_dtmf()`, `send_dtmf()`.
+- **Recording:** `record_start()`, `record_stop()`.
+- **AI shortcuts:** `say(text)`, `listen(timeout=)`, `agent.respond(text)`.
+- **Bridging:** `bridge_with(other)`, `transfer_to_queue(name)`.
+
+[Reference →](/voxtra/reference/call-session)
+
+### 4. `VoxtraApp`
+
+The orchestrator. It:
+
+1. Owns the `ARIClient` connection and event loop.
+2. Translates ARI events (`StasisStart`, `StasisEnd`,
+   `ChannelDtmfReceived`, …) into `VoxtraEvent`s.
+3. Looks up the right handler in the `Router`.
+4. Creates a `CallSession` and runs your handler in a background task.
+5. Optionally auto-wires a `VoicePipeline` (when STT + LLM + TTS are
+   configured) and a `BackendWebhook`.
+6. Cleans up on hangup.
+
+You construct it once, decorate handlers, and call `app.run()`:
+
+```python
+app = VoxtraApp(ari_url="...", ari_user="...", ari_password="...")
+
+@app.default()
+async def handle(call): ...
+
+app.run()
+```
+
+[Reference →](/voxtra/reference/voxtra-app)
+
+## The provider registry
+
+STT, TTS, LLM, VAD, telephony, and media providers self-register via
+decorators:
+
+```python
+from voxtra.registry import registry
+from voxtra.ai.stt.base import BaseSTT
+
+@registry.register_stt("my-provider")
+class MySTT(BaseSTT):
+    ...
+```
+
+This means third-party packages can ship new providers without touching
+Voxtra's core. Resolution is lazy — providers aren't imported until
+something asks for them by name. See
+[`voxtra.registry`](https://github.com/rexplore-ai/voxtra/blob/main/src/voxtra/registry.py).
+
+## Telephony adapter contract
+
+`BaseTelephonyAdapter` is the seam between Voxtra and the underlying PBX.
+Voxtra ships an `AsteriskAdapter` (via `ARIClient`) and a `LiveKitAdapter`
+stub. New adapters implement ten async methods (`connect`, `listen`,
+`answer_call`, `hangup_call`, `transfer_call`, `hold_call`, `send_dtmf`,
+`create_media_bridge`, `play_audio`, `disconnect`) and translate the
+backend's native events into `VoxtraEvent`s.
+
+Switch backends in one line:
+
+```python
+from voxtra import VoxtraApp
+from voxtra.telephony.asterisk import AsteriskAdapter
+
+app = VoxtraApp(telephony=AsteriskAdapter(...))
+# or: app = VoxtraApp.with_asterisk(ari_url=..., ari_user=..., ari_password=...)
+```
+
+## Sessions, events, and the queue
+
+Every `CallSession` has an `asyncio.Queue` for `VoxtraEvent`s. The
+framework pushes events onto it; your handler can `await` them via
+helpers like `listen()`, `listen_dtmf()`, or `audio_stream()`. Events
+that flow through:
+
+- `CALL_STARTED`, `CALL_ANSWERED`, `CALL_ENDED`
+- `USER_TRANSCRIPT`, `AGENT_RESPONSE` (from the AI pipeline)
+- `DTMF_RECEIVED`
+- `MEDIA_STARTED`, `MEDIA_STOPPED`
+
+Full taxonomy: [Events →](/voxtra/concepts/events).
+
+## What runs where
+
+| Component        | Process                          | Notes                                          |
+| ---------------- | -------------------------------- | ---------------------------------------------- |
+| `VoxtraApp`      | Your application                 | One per Stasis app namespace.                  |
+| `ARIClient`      | Inside `VoxtraApp`               | Single HTTP + WS connection, auto-reconnect.   |
+| `AudioSocketServer` | Inside `VoxtraApp`            | TCP server, accepts media legs.                |
+| `VoicePipeline`  | One per active `CallSession`     | Background asyncio task.                       |
+| `BackendWebhook` | One per `VoxtraApp`              | Owns its own `httpx.AsyncClient`.              |
+| Asterisk         | Separate process                 | Voxtra never assumes single-host deployment.   |
+
+## Production-grade defaults
+
+Voxtra's defaults are tuned for production traffic:
+
+- **Reconnects** on ARI WS drops with configurable backoff.
+- **Idempotent** stop signals — `agents/stop` and `delete_room` no-op
+  cleanly on already-gone resources.
+- **SIP-aware idle detection** — browser observers leaving doesn't end a
+  call; only a missing SIP leg does.
+- **HMAC-signed webhooks** — receivers verify origin before acting.
+- **Best-effort emission** — webhook and recording-sink failures never
+  propagate into the call pipeline.

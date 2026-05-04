@@ -1,0 +1,250 @@
+---
+title: ARIClient
+description:
+  Low-level Asterisk REST Interface client. HTTP control + WebSocket
+  events, with typed wrappers for every common operation.
+---
+
+# `ARIClient`
+
+```python
+from voxtra import ARIClient
+```
+
+The lowest layer. A direct, async wrapper around Asterisk's
+[REST Interface](https://wiki.asterisk.org/wiki/display/AST/Asterisk+REST+Interface)
+— HTTP for control plane, WebSocket for events.
+
+You don't usually construct this yourself; `VoxtraApp` does it for you
+and exposes it as `app.ari`. Reach for it when you need a raw ARI verb
+that Voxtra hasn't wrapped at a higher level.
+
+## Constructor
+
+```python
+ARIClient(
+    base_url: str,
+    username: str,
+    password: str,
+    *,
+    app_name: str = "voxtra",
+    reconnect_interval: float = 5.0,
+)
+```
+
+| Param         | Notes                                                          |
+| ------------- | -------------------------------------------------------------- |
+| `base_url`    | E.g. `http://pbx:8088`. WebSocket URL is derived from this.    |
+| `username`    | ARI username.                                                  |
+| `password`    | ARI password.                                                  |
+| `app_name`    | Default Stasis app for `originate()`, `snoop_channel()`, etc.  |
+| `reconnect_interval` | WS reconnect backoff in seconds.                        |
+
+## Connection
+
+### `connect()`
+
+Open the HTTP client and ping `/ari/asterisk/info`. Returns the system-info
+dict.
+
+```python
+ari = ARIClient(base_url="http://pbx:8088", username="...", password="...")
+info = await ari.connect()
+print(info["system"]["version"])
+```
+
+`connect()` is **idempotent** — calling it on an already-connected client
+returns the cached info dict.
+
+### `close()` / context manager
+
+```python
+async with ARIClient(...) as ari:
+    await ari.list_channels()
+# auto-closes
+```
+
+### `is_connected: bool`
+
+True after a successful `connect()`, False otherwise.
+
+## Event stream
+
+### `events() → AsyncIterator[ARIEvent]`
+
+Subscribe to the Stasis WebSocket. Yields parsed `ARIEvent`s until
+the WS closes:
+
+```python
+async for event in ari.events():
+    if event.type == "StasisStart":
+        ...
+    elif event.type == "ChannelDtmfReceived":
+        ...
+```
+
+Auto-reconnects on disconnect with `reconnect_interval` backoff.
+`VoxtraApp` consumes this iterator internally; you only use it
+directly when bypassing the framework.
+
+## Channels
+
+### `originate(endpoint, *, app=None, context=None, extension=None, priority=None, caller_id="", timeout=30, variables=None, channel_id=None) → Channel`
+
+Create an outbound call. Two routing modes:
+
+**Stasis routing** (default):
+
+```python
+channel = await ari.originate(
+    "PJSIP/+265999@my-trunk",
+    caller_id="+265888000001",
+    timeout=30,
+)
+```
+
+The call lands directly in `app_name`'s Stasis app on answer.
+
+**Dialplan routing**:
+
+```python
+channel = await ari.originate(
+    "PJSIP/+265999@my-trunk",
+    app=None,                       # explicit: no Stasis
+    context="from-trunk-out",
+    extension="+265999",
+    caller_id="+265888000001",
+    variables={"MY_CALL_ID": "abc-123"},
+)
+```
+
+The call enters the dialplan as if it had arrived via SIP. Use this
+mode when existing dialplan logic needs to fire.
+
+### `answer_channel(channel_id)`
+
+```python
+await ari.answer_channel(channel.id)
+```
+
+### `hangup_channel(channel_id, reason="normal")`
+
+```python
+await ari.hangup_channel(channel.id, reason="normal_clearing")
+```
+
+### `get_channel(channel_id) → Channel`
+
+### `list_channels() → list[Channel]`
+
+### `redirect_channel(channel_id, endpoint)`
+
+Blind transfer the channel to a new SIP endpoint.
+
+### `set_channel_var(channel_id, variable, value)`
+
+Set an Asterisk channel variable. The dialplan can `${VARIABLE}` to read it.
+
+### `send_dtmf(channel_id, dtmf)`
+
+Inject DTMF tones (`"1234#"`) onto the channel.
+
+### `moh_start(channel_id, moh_class="default")` / `moh_stop(channel_id)`
+
+Music on hold.
+
+### `snoop_channel(channel_id, *, app=None, spy="both", whisper="none") → Channel`
+
+Create a snoop leg for monitoring or whispering. Returns the snoop
+channel, which you can route into your Stasis app for processing
+(e.g. live transcription).
+
+### `create_external_media(...)` 
+
+Create an external-media channel for RTP-based audio injection. See
+the [Voxtra source](https://github.com/rexplore-ai/voxtra/blob/main/src/voxtra/ari/client.py)
+for parameter details.
+
+## Bridges
+
+```python
+bridge = await ari.create_bridge(bridge_type="mixing", name="acme-conf")
+await ari.add_to_bridge(bridge.id, [channel1.id, channel2.id])
+await ari.remove_from_bridge(bridge.id, [channel2.id])
+await ari.destroy_bridge(bridge.id)
+```
+
+## Playback
+
+```python
+playback = await ari.play_on_channel(channel.id, media="sound:hello-world")
+await ari.stop_playback(playback.id)
+```
+
+## Recording
+
+```python
+await ari.record_channel(channel.id, name="my-recording", fmt="wav")
+await ari.stop_recording("my-recording")
+```
+
+For recordings, prefer the higher-level
+[`CallSession.record_start`](/voxtra/reference/call-session) — it wires
+the [`RecordingSink`](/voxtra/reference/recording) for you.
+
+## Module / config management
+
+### `reload_module(module_name)`
+
+`PUT /ari/asterisk/modules/{module}` — live-reload an Asterisk module
+without `asterisk -rx` or SSH.
+
+```python
+await ari.reload_module("res_pjsip.so")
+await ari.reload_module("pbx_config.so")
+```
+
+Used by `TenantProvisioner.reload_asterisk()` after writing tenant
+config fragments.
+
+### `list_modules() → list[dict]`
+
+`GET /ari/asterisk/modules` — list all loaded modules.
+
+## Raw helpers
+
+For ARI endpoints Voxtra hasn't wrapped, use the raw HTTP helpers:
+
+```python
+data = await ari._get("/ari/recordings/stored/my-recording")
+await ari._post(f"/ari/channels/{channel.id}/play", params={"media": "..."})
+await ari._put(f"/ari/asterisk/modules/res_pjsip.so")
+await ari._delete(f"/ari/recordings/stored/my-recording")
+```
+
+These are documented as private (`_`-prefixed) but are stable — they
+won't change without a major version bump.
+
+## Models
+
+The ARI client returns typed Pydantic models for the common resources:
+
+- `voxtra.ari.models.Channel`
+- `voxtra.ari.models.Bridge`
+- `voxtra.ari.models.Playback`
+
+Each has a `.from_ari(data)` classmethod that parses the raw ARI JSON.
+
+## Event types
+
+Events from `ari.events()` are `ARIEvent`s, with subclasses for each
+event type. Common ones:
+
+- `StasisStart` — call entered the Stasis app.
+- `StasisEnd` — call left.
+- `ChannelDtmfReceived` — `event.digit`.
+- `ChannelHangupRequest` / `ChannelDestroyed` — hangup signals.
+- `RecordingFinished` — recording stopped.
+
+See [`voxtra/ari/events.py`](https://github.com/rexplore-ai/voxtra/blob/main/src/voxtra/ari/events.py)
+for the full taxonomy.
