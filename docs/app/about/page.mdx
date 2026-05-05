@@ -1,77 +1,184 @@
 ---
 sidebarTitle: About
+title: About Rexplore Labs
 description:
-  Learn about Nextra's history, team, and contributors, and explore how
-  open-source technologies power Nextra's features.
+  Rexplore Research Labs is an AI research and product development lab
+  focused on Reinforcement Learning, multi-agent systems, and
+  autonomous decision-making for real-world environments.
 ---
 
-import { Image } from 'nextra/components'
-import { cloneElement } from 'react'
+import { Cards, Callout } from 'nextra/components'
 
-export default function MdxLayout(props) {
-  return cloneElement(props.children, {
-    components: {
-      img: props => <Image {...props} className="inline" />
-    }
-  })
-}
+# About Rexplore Research Labs
 
-# About Nextra
+**Rexplore Labs** is an AI research and product development lab focused on
+building autonomous, learning-driven systems for real-world environments.
 
-Nextra was initially created by [Vercel](https://vercel.com) members
-[Shu Ding](https://twitter.com/shuding_) and
-[Paco Coursey](https://twitter.com/pacocoursey) in 2020. Since 2021,
-[Yixuan Xu](https://twitter.com/yixuanxu94) contributed tremendously to the
-project.
+Our work centers on **Reinforcement Learning (RL)**, **multi-agent systems**,
+and **scalable decision-making** — developing agents that learn through
+interaction, coordination, and adaptation.
 
-In 2022, [Dimitri Postolov](https://twitter.com/dimaMachina_) from
-[The Guild](https://the-guild.dev) joined the core team to help with the
-development of Nextra 2.
+We combine fundamental research with product engineering to design and deploy
+systems that operate under real-world constraints, including limited
+infrastructure and high-uncertainty settings. Our research spans
+reinforcement learning, distributed systems, and applied AI, enabling the
+development of reliable and adaptive intelligent systems.
 
-In 2024 Nextra 3 was released, current primary maintainer Dimitri Postolov fully
-developed it, and [Oscar Xie](https://github.com/87xie)
-[actively contributed](https://github.com/shuding/nextra/pulls?q=sort%3Aupdated-desc+is%3Apr+author%3A87xie+is%3Aclosed+created%3A%3C2024-10-03)
-to this release.
+At Rexplore Labs, we build systems that **explore, collaborate, and make
+decisions at scale** — driving practical impact across industries in Africa
+and globally.
 
-In 2025 Nextra 4 with [App Router](https://nextjs.org/docs/app) support was
-released, Dimitri Postolov fully developed it too.
+## Our Philosophy
 
-## Team
+Many believe AGI will emerge from scaling language models. There's no doubt
+these systems are powerful — they've pushed AI forward and unlocked
+incredible applications. But we don't believe true intelligence comes from
+predicting the next token or manipulating language.
 
-Currently, the project is maintained by Dimitri Postolov. You can check out
-[the full list of contributors](https://github.com/shuding/nextra/graphs/contributors)
-on GitHub.
+> **Language is not intelligence. It's a reflection of it.**
 
-## Credits
+Real intelligence is the ability to **understand, act, and make decisions in
+the world**. Today's models learn from human data. Even RLHF is still humans
+guiding behavior through preferences. Intelligence should not depend on
+imitation — it should emerge from interaction.
 
-Nextra is powered by these incredible open source projects:
+Look at a cat. No one teaches it explicitly what is right or wrong. It
+learns by acting, observing outcomes, and adapting its behavior. *That* is
+intelligence.
 
-- https://reactjs.org
-- https://nextjs.org
-- https://turbo.build
-- https://mdxjs.com
-- https://pnpm.io
-- https://tailwindcss.com
-- https://github.com/pacocoursey/next-themes
-- https://github.com/shikijs/shiki
-- https://github.com/cloudcannon/pagefind
-- https://github.com/atomiks/rehype-pretty-code
-- https://github.com/Brooooooklyn/simple-git
-- https://github.com/francoismassart/eslint-plugin-tailwindcss
+That's why at Rexplore Research Labs we focus on advancing reinforcement
+learning and autonomous agents — not just models that talk, but systems that
+learn, adapt, and operate in the real world.
 
-## Design assets
+```mermaid
+flowchart LR
+    Observe["<b>Observe</b><br/>Read state from environment"]
+    Decide["<b>Decide</b><br/>Policy maps state → action"]
+    Act["<b>Act</b><br/>Apply action; world changes"]
+    Learn["<b>Learn</b><br/>Update policy from reward"]
 
-Feel free to use the Nextra logo and other assets in your project. But please
-don't modify the logo, and don't use the logo to represent your project or
-product.
+    Observe --> Decide
+    Decide --> Act
+    Act --> Learn
+    Learn --> Observe
 
-|    Name     |                   Description                    |                Preview                |
-| :---------: | :----------------------------------------------: | :-----------------------------------: |
-|    Icon     | Useful for favicons, app icons, link icons, etc. |      ![Rexplore icon](../icon.png)     |
-|    Logo     |                 Full Rexplore logo               |       ![Rexplore logo](/logo.svg)      |
-| Social Card |              The Rexplore social card            | ![Rexplore card](/opengraph-image.jpeg) |
+    classDef step fill:#ede9fe,stroke:#5b21b6,color:#2e1065
+    class Observe,Decide,Act,Learn step
+```
 
-## License
+## Our Divisions & Products
 
-The Nextra project and themes are licensed under
-[the MIT license](https://github.com/shuding/nextra/blob/main/LICENSE).
+Each division turns our core research in Reinforcement Learning and
+Multi-Agent Systems into products that solve specific, high-impact problems.
+
+<Cards num={2}>
+  <Cards.Card arrow title="Voxtra — Voice AI Infrastructure" href="/voxtra">
+    <>Open-source voice AI platform bridging telephony systems like Asterisk with AI providers. Build production-ready voice agents in Python with just a few lines of code.</>
+  </Cards.Card>
+  <Cards.Card arrow title="Luso8 Cloud — Intelligent GTM" href="https://luso8.com">
+    <>The intelligent GTM platform that helps businesses discover customers, automate engagement, and expand across the AfCFTA's $3.4 trillion market.</>
+  </Cards.Card>
+  <Cards.Card arrow title="Industrial Automation" href="https://rexplore.ai/industrial">
+    <>The intelligence layer for industrial autonomy — Multi-Agent RL systems that coordinate robot fleets, optimize production, and enable safe human-robot collaboration.</>
+  </Cards.Card>
+  <Cards.Card arrow title="Research Lab" href="https://rexplore.ai/research">
+    <>Foundational research in Reinforcement Learning, multi-agent systems, AI safety, and adaptive intelligence — the scientific foundation that powers all our products.</>
+  </Cards.Card>
+</Cards>
+
+### From research to deployed systems
+
+```mermaid
+flowchart LR
+    Research["<b>Research</b><br/>RL & MARL"]
+    Prototype["<b>Prototype</b><br/>Simulation"]
+    Product["<b>Product</b><br/>Deployment"]
+    Scale["<b>Scale</b><br/>Africa & Beyond"]
+
+    Research --> Prototype
+    Prototype --> Product
+    Product --> Scale
+
+    classDef stage fill:#dcfce7,stroke:#166534,color:#14532d
+    class Research,Prototype,Product,Scale stage
+```
+
+We don't just publish papers — we turn research into products, platforms,
+and divisions that solve real challenges. From voice AI infrastructure to
+industrial robotics coordination, our work spans the full path from
+fundamental science to deployed systems, with a focus on Africa's unique
+opportunities.
+
+## Active Products
+
+### Voxtra
+
+Open-source voice AI platform for building multilingual voice agents,
+speech-to-text pipelines, and conversational systems — designed for African
+languages and beyond.
+
+- Voice Agent SDK
+- Multilingual STT / TTS
+- Real-time pipelines
+- Edge deployment
+
+[Read the Voxtra docs →](/voxtra) · [GitHub](https://github.com/rexplore-ai/voxtra) · [PyPI](https://pypi.org/project/voxtra/)
+
+### Luso8 Cloud
+
+Intelligent GTM platform for African markets. Customer discovery, automated
+engagement, and AfCFTA expansion across 54 countries / 1.3B people.
+
+- Customer discovery
+- Automated engagement
+- AfCFTA expansion
+- AI-powered GTM
+
+[Visit Luso8 Cloud →](https://luso8.com)
+
+### Industrial Automation Division
+
+The intelligence layer for industrial autonomy. We are building Multi-Agent
+RL systems that coordinate robot fleets, optimize production lines, and
+enable safe human-robot collaboration.
+
+- Fleet orchestration
+- Adaptive scheduling
+- Digital twin simulation
+- Safe autonomy (ISO/TS 15066, ISO 10218-2:2025)
+
+## Our Services
+
+| Service           | What we do                                                               |
+| ----------------- | ------------------------------------------------------------------------ |
+| **AI Research**   | Foundation models, multimodal AI, reinforcement learning, AI safety.     |
+| **AI Solutions**  | Custom AI models, integration, performance optimization, scalable arch.  |
+| **AI Consulting** | AI strategy, technical consulting, team training, implementation roadmaps. |
+
+## Company
+
+| Field         | Value                                                              |
+| ------------- | ------------------------------------------------------------------ |
+| Industry      | Technology, Information & Internet                                 |
+| Headquarters  | Lilongwe, Central Region, Malawi                                   |
+| Founded       | 2025                                                               |
+| Size          | 2 – 10 employees                                                   |
+| Website       | [https://rexplore.ai](https://rexplore.ai)                         |
+| Phone         | +265 996 668 149                                                   |
+| Email         | [hello@rexplore.ai](mailto:hello@rexplore.ai)                      |
+
+### Specialties
+
+AI · Machine Learning · LLMs · Generative AI · Agentic AI ·
+**Reinforcement Learning** · Deep Learning · Deep Reinforcement Learning ·
+Research · **Multi-Agent Reinforcement Learning**
+
+## Get in touch
+
+<Callout type="info">
+  Ready to explore how AI can transform your business? Let's start a conversation.
+</Callout>
+
+- **Email** — [hello@rexplore.ai](mailto:hello@rexplore.ai)
+- **Phone** — +265 996 668 149
+- **Location** — Lilongwe, Malawi
