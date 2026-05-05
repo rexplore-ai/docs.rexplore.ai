@@ -163,10 +163,6 @@ export default {
     items: {
       index: '',
       'getting-started': '',
-      _: {
-        type: 'separator',
-        title: 'Concepts'
-      },
       concepts: {
         items: {
           architecture: '',
@@ -174,10 +170,6 @@ export default {
           sessions: '',
           routing: ''
         }
-      },
-      __: {
-        type: 'separator',
-        title: 'Guides'
       },
       guides: {
         items: {
@@ -187,10 +179,6 @@ export default {
           recording: '',
           'multi-tenant': ''
         }
-      },
-      ___: {
-        type: 'separator',
-        title: 'Reference'
       },
       reference: {
         items: {
@@ -202,7 +190,7 @@ export default {
           provisioning: ''
         }
       },
-      ____: {
+      _: {
         type: 'separator',
         title: 'Resources'
       },
