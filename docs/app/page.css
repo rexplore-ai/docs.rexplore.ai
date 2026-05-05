@@ -39,6 +39,217 @@
   font-feature-settings: initial;
   line-height: 1.6;
 }
+
+/* ─────────────────────────── Product cards ─────────────────────────── */
+
+.product-card {
+  display: flex;
+  flex-direction: column;
+  padding: 0 !important;
+  overflow: hidden;
+  transition:
+    transform 0.25s ease,
+    box-shadow 0.25s ease;
+}
+
+.product-card:hover {
+  transform: translateY(-4px);
+  box-shadow:
+    0 12px 28px rgb(0 0 0 / 12%),
+    0 4px 8px rgb(0 0 0 / 6%) !important;
+}
+
+.product-card__media {
+  width: 100%;
+  aspect-ratio: 16 / 10;
+  overflow: hidden;
+  background-color: #f3f4f6;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.dark .product-card__media {
+  background-color: #0f172a;
+}
+
+.product-card__media img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  object-position: top center;
+}
+
+.product-card__media--gradient {
+  background: linear-gradient(135deg, #1e293b 0%, #0f172a 60%, #020617 100%);
+  position: relative;
+}
+
+.product-card__media--gradient::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background-image:
+    radial-gradient(circle at 20% 30%, rgba(99, 102, 241, 0.25) 0%, transparent 40%),
+    radial-gradient(circle at 80% 70%, rgba(236, 72, 153, 0.15) 0%, transparent 40%);
+}
+
+.product-card__icon {
+  width: 96px;
+  height: 96px;
+  color: #fff;
+  position: relative;
+  z-index: 1;
+  filter: drop-shadow(0 4px 16px rgba(99, 102, 241, 0.4));
+}
+
+.product-card__body {
+  padding: 1.75rem 1.75rem 2rem;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.75rem;
+  flex: 1;
+}
+
+.product-card__body h3 {
+  margin: 0;
+  font-size: 1.5rem !important;
+  font-weight: 600;
+}
+
+.product-card__body p {
+  margin: 0;
+  text-align: center;
+  opacity: 0.75;
+  line-height: 1.5;
+  font-size: 0.95rem;
+}
+
+.product-card__cta {
+  margin-top: auto;
+  padding-top: 1rem;
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: #0077ff;
+  letter-spacing: 0.01em;
+}
+
+.product-card--dark .product-card__cta {
+  color: #93c5fd;
+}
+
+/* ─────────────────────────── Research cards ─────────────────────────── */
+
+.research-card {
+  display: flex !important;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  padding: 2rem 1.75rem !important;
+  gap: 0.75rem;
+  transition:
+    transform 0.25s ease,
+    box-shadow 0.25s ease;
+}
+
+.research-card:hover {
+  transform: translateY(-2px);
+}
+
+.research-card__icon {
+  width: 56px;
+  height: 56px;
+  border-radius: 14px;
+  background: linear-gradient(135deg, #dbeafe, #ede9fe);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin-bottom: 0.5rem;
+}
+
+.dark .research-card__icon {
+  background: linear-gradient(135deg, #1e3a8a, #4c1d95);
+}
+
+.research-card__icon svg {
+  width: 28px;
+  height: 28px;
+  color: #4338ca;
+}
+
+.dark .research-card__icon svg {
+  color: #c4b5fd;
+}
+
+.research-card h3 {
+  margin: 0;
+  font-size: 1.25rem !important;
+  font-weight: 600;
+}
+
+.research-card p {
+  margin: 0;
+  opacity: 0.7;
+  line-height: 1.55;
+  font-size: 0.95rem;
+}
+
+/* ─────────────────────────── Connect grid ─────────────────────────── */
+
+.connect-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 1.25rem;
+  max-width: 56rem;
+  margin: 0 auto;
+}
+
+@media screen and (min-width: 768px) {
+  .connect-grid {
+    grid-template-columns: repeat(3, 1fr);
+  }
+}
+
+.connect-grid__item {
+  padding: 1.75rem 1.5rem;
+  background-color: #fff;
+  border-radius: 1rem;
+  text-align: center;
+  border: 1px solid rgba(0, 0, 0, 0.06);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04);
+}
+
+.dark .connect-grid__item {
+  background-color: #18181b;
+  border-color: rgba(255, 255, 255, 0.08);
+}
+
+.connect-grid__item h3 {
+  margin: 0 0 0.5rem;
+  font-size: 1.25rem;
+  font-weight: 600;
+}
+
+.connect-grid__item p {
+  margin: 0;
+  opacity: 0.7;
+  font-size: 0.95rem;
+}
+
+.connect-grid__item--accent {
+  background: linear-gradient(135deg, #2563eb 0%, #1d4ed8 100%);
+  color: #fff;
+  border-color: transparent;
+}
+
+.connect-grid__item--accent p {
+  opacity: 0.9;
+}
+
+.dark .connect-grid__item--accent {
+  background: linear-gradient(135deg, #3b82f6 0%, #1e40af 100%);
+}
 #docs-card {
   color: #fff;
   text-shadow: 0 0 1rem rgba(0, 0, 0, 0.1);

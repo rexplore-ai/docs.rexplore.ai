@@ -54,9 +54,9 @@ export const metadata: Metadata = {
 
 const banner = (
   <Banner>
-    🚀 Welcome to Rexplore Research Labs Documentation.{' '}
-    <Link href="/docs" className="text-current!">
-      Get Started
+    🚀 Voxtra v0.3.1 is live.{' '}
+    <Link href="/voxtra" className="text-current!">
+      Read the docs
     </Link>
   </Banner>
 )

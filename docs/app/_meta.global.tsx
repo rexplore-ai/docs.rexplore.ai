@@ -112,6 +112,7 @@ export default {
   docs: {
     type: 'page',
     title: 'Documentation',
+    display: 'hidden',
     items: {
       index: '',
       'file-conventions': { items: FILE_CONVENTIONS },
@@ -153,7 +154,8 @@ export default {
     }
   },
   api: {
-    type: 'page'
+    type: 'page',
+    display: 'hidden'
   },
   voxtra: {
     type: 'page',
@@ -235,6 +237,7 @@ export default {
   },
   showcase: {
     type: 'page',
+    display: 'hidden',
     theme: {
       copyPage: false,
       typesetting: 'article',
@@ -245,6 +248,7 @@ export default {
   },
   sponsors: {
     type: 'page',
+    display: 'hidden',
     theme: {
       copyPage: false,
       typesetting: 'article',
