@@ -110,6 +110,26 @@ const IndexPage: FC = () => {
           </Features>
         </div>
       </div>
+      <div className="features-container about-strip">
+        <div className="content-container">
+          <h2 className="text-center text-4xl font-bold mb-6">About Rexplore Labs</h2>
+          <p className="text-center text-lg opacity-80 max-w-3xl mx-auto leading-relaxed">
+            Rexplore Research Labs is an AI research and product development lab focused on
+            <strong> Reinforcement Learning</strong> and <strong>Multi-Agent Systems</strong>.
+            We don&apos;t just publish papers — we turn research into products, platforms, and
+            divisions that solve real-world problems.
+          </p>
+          <p className="text-center opacity-70 max-w-3xl mx-auto mt-4 leading-relaxed">
+            Headquartered in Lilongwe, Malawi · founded 2025 · building autonomous,
+            learning-driven systems for industries across Africa and beyond.
+          </p>
+          <p className="subtitle text-center mt-6">
+            <Link className={styles.cta} href="/about">
+              Learn more about us <span>→</span>
+            </Link>
+          </p>
+        </div>
+      </div>
       <div className="features-container">
         <div className="content-container">
           <h2 className="text-center text-4xl font-bold mb-4">

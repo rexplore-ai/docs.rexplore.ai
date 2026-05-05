@@ -5,15 +5,34 @@
   margin: 0 auto;
 }
 .features-container {
-  margin: 8rem 0 0;
-  padding: 4rem 0;
+  margin: 4rem 0 0;
+  padding: 5rem 0 5rem;
   background-color: #f3f4f6;
 }
-.features-container .content-container {
-  margin-top: -8rem;
+.features-container + .features-container {
+  margin-top: 0;
 }
 .dark .features-container {
-  background-color: #000;
+  background-color: #0a0a0a;
+}
+.features-container h2 {
+  padding-top: 0;
+}
+.features-container .content-container > h2 + p {
+  margin-bottom: 3.5rem !important;
+}
+
+/* About strip on the landing page — slightly different background to set
+   it apart from the cards strip above. */
+.about-strip {
+  background-color: #fafafa;
+  padding: 6rem 0;
+}
+.dark .about-strip {
+  background-color: #0f0f10;
+}
+.about-strip .content-container > h2 + p {
+  margin-bottom: 0 !important;
 }
 .headline {
   display: inline-flex;

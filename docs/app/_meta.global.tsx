@@ -212,6 +212,7 @@ export default {
   },
   blog: {
     type: 'page',
+    display: 'hidden',
     theme: {
       typesetting: 'article',
       toc: false
