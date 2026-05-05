@@ -12,45 +12,30 @@ compose, the rest of the API is mechanical.
 
 ## The big picture
 
-```ascii
-       ┌────────────────────────────────┐
-       │ Caller / SIP trunk             │
-       └──────────────┬─────────────────┘
-                      │ SIP
-                      ▼
-        ┌─────────────────────────────┐
-        │  Asterisk PBX               │
-        │  - PJSIP transport          │
-        │  - Dialplan / Stasis app    │
-        │  - AudioSocket dialplan app │
-        └────┬────────────────────┬───┘
-             │ ARI                │ AudioSocket TCP
-             │ (HTTP + WS)        │ (μ-law / PCM frames)
-             ▼                    ▼
-   ┌────────────────────┐  ┌──────────────────────┐
-   │ ARIClient          │  │ AudioSocketServer    │
-   │ - HTTP control     │  │ - TCP accept loop    │
-   │ - WS event stream  │  │ - 4-byte framing     │
-   └────────┬───────────┘  └──────────┬───────────┘
-            │                         │
-            ▼                         ▼
-   ┌────────────────────────────────────────────┐
-   │ VoxtraApp                                  │
-   │ - Translates ARI events → VoxtraEvents     │
-   │ - Owns the Router (dispatch by ext/number) │
-   │ - Creates a CallSession per call           │
-   │ - Auto-wires VoicePipeline (if configured) │
-   │ - Fires BackendWebhook (if configured)     │
-   └─────────────────────┬──────────────────────┘
-                         │
-                         ▼
-              ┌──────────────────────┐
-              │ Your @app.route()    │
-              │ async def handler:   │
-              │   call.answer()      │
-              │   call.say(...)      │
-              │   call.listen(...)   │
-              └──────────────────────┘
+```mermaid
+flowchart TD
+    Caller["📞 Caller / SIP trunk"]
+    Asterisk["<b>Asterisk PBX</b><br/>• PJSIP transport<br/>• Dialplan / Stasis app<br/>• AudioSocket dialplan app"]
+    ARIClient["<b>ARIClient</b><br/>• HTTP control<br/>• WS event stream"]
+    AudioSocket["<b>AudioSocketServer</b><br/>• TCP accept loop<br/>• 4-byte framing"]
+    VoxtraApp["<b>VoxtraApp</b><br/>• Translates ARI events → VoxtraEvents<br/>• Owns the Router (dispatch by ext/number)<br/>• Creates a CallSession per call<br/>• Auto-wires VoicePipeline (if configured)<br/>• Fires BackendWebhook (if configured)"]
+    Handler["<b>Your @app.route()</b><br/>async def handler:<br/>&nbsp;&nbsp;call.answer()<br/>&nbsp;&nbsp;call.say(...)<br/>&nbsp;&nbsp;call.listen(...)"]
+
+    Caller -->|SIP| Asterisk
+    Asterisk -->|"ARI<br/>(HTTP + WS)"| ARIClient
+    Asterisk -->|"AudioSocket TCP<br/>(μ-law / PCM frames)"| AudioSocket
+    ARIClient --> VoxtraApp
+    AudioSocket --> VoxtraApp
+    VoxtraApp --> Handler
+
+    classDef external fill:#e0f2fe,stroke:#0369a1,color:#0c4a6e
+    classDef pbx fill:#fef3c7,stroke:#b45309,color:#78350f
+    classDef voxtra fill:#ede9fe,stroke:#5b21b6,color:#2e1065
+    classDef user fill:#dcfce7,stroke:#166534,color:#14532d
+    class Caller external
+    class Asterisk pbx
+    class ARIClient,AudioSocket,VoxtraApp voxtra
+    class Handler user
 ```
 
 ## The four primitives

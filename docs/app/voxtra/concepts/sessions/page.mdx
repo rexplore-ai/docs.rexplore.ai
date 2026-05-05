@@ -19,11 +19,18 @@ async def handle(call):  # call: CallSession
 
 ## Lifecycle
 
-```ascii
-   created ──▶ ringing ──▶ answered ──▶ in-progress ──▶ completed
-                  │            │             │
-                  ▼            ▼             ▼
-                 (early hangup paths land in completed)
+```mermaid
+stateDiagram-v2
+    [*] --> Created
+    Created --> Ringing
+    Ringing --> Answered
+    Answered --> InProgress: in-progress
+    InProgress --> Completed
+    Ringing --> Completed: early hangup
+    Answered --> Completed: early hangup
+    InProgress --> Failed
+    Completed --> [*]
+    Failed --> [*]
 ```
 
 States live on `call.state`:

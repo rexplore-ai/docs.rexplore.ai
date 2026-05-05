@@ -17,19 +17,25 @@ Stasis app, so events for one tenant never leak into another.
 
 ## The model
 
-```ascii
-                  ┌────────────────────────────┐
-                  │  Asterisk PBX (one cluster) │
-                  └─────────────┬──────────────┘
-                                │ ARI
-              ┌─────────────────┼─────────────────┐
-              ▼                 ▼                 ▼
-        ┌──────────┐      ┌──────────┐      ┌──────────┐
-        │ VoxtraApp │      │ VoxtraApp │      │ VoxtraApp │
-        │ acme      │      │ beta      │      │ gamma     │
-        │ Stasis(   │      │ Stasis(   │      │ Stasis(   │
-        │  acme)    │      │  beta)    │      │  gamma)   │
-        └──────────┘      └──────────┘      └──────────┘
+```mermaid
+flowchart TD
+    Asterisk["<b>Asterisk PBX</b><br/>(one shared cluster)"]
+    Acme["<b>VoxtraApp · acme</b><br/>Stasis(voxtra-acme)"]
+    Beta["<b>VoxtraApp · beta</b><br/>Stasis(voxtra-beta)"]
+    Gamma["<b>VoxtraApp · gamma</b><br/>Stasis(voxtra-gamma)"]
+
+    Asterisk -->|ARI| Acme
+    Asterisk -->|ARI| Beta
+    Asterisk -->|ARI| Gamma
+
+    classDef pbx fill:#fef3c7,stroke:#b45309,color:#78350f
+    classDef tenantA fill:#dcfce7,stroke:#166534,color:#14532d
+    classDef tenantB fill:#e0f2fe,stroke:#0369a1,color:#0c4a6e
+    classDef tenantC fill:#fce7f3,stroke:#9d174d,color:#831843
+    class Asterisk pbx
+    class Acme tenantA
+    class Beta tenantB
+    class Gamma tenantC
 ```
 
 Each `VoxtraApp` has:

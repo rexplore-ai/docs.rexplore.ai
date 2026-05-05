@@ -17,25 +17,27 @@ needs to go.
 
 ## Anatomy
 
-```ascii
-              record_start()
-                    │
-                    ▼
-       Asterisk MixMonitor / record API
-                    │  (writes file to /var/spool/asterisk/recording/)
-                    ▼
-              record_stop()
-                    │
-                    ▼
-        ┌────────────────────────┐
-        │  RecordingSink         │
-        │  on_recording_complete │  ◀── you implement this
-        └────────────────────────┘
-                    │
-                    ▼
-          GCS / S3 / S3-compatible /
-          webhook to your service /
-          local archival …
+```mermaid
+flowchart TD
+    Start(["call.record_start()"])
+    Asterisk["<b>Asterisk MixMonitor / record API</b><br/>writes to /var/spool/asterisk/recording/"]
+    Stop(["call.record_stop()"])
+    Sink["<b>RecordingSink</b><br/>on_recording_complete(metadata)<br/><i>↑ you implement this</i>"]
+    Storage["GCS · S3 · S3-compatible<br/>· webhook to your service<br/>· local archival …"]
+
+    Start --> Asterisk
+    Asterisk --> Stop
+    Stop --> Sink
+    Sink --> Storage
+
+    classDef call fill:#dcfce7,stroke:#166534,color:#14532d
+    classDef pbx fill:#fef3c7,stroke:#b45309,color:#78350f
+    classDef hook fill:#ede9fe,stroke:#5b21b6,color:#2e1065
+    classDef store fill:#e0f2fe,stroke:#0369a1,color:#0c4a6e
+    class Start,Stop call
+    class Asterisk pbx
+    class Sink hook
+    class Storage store
 ```
 
 The sink is purely a notification — Voxtra never reads the audio
