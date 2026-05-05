@@ -68,7 +68,7 @@ const navbar = (
         <span style={{ fontWeight: 600 }}>Rexplore Docs</span>
       </div>
     }
-    projectLink="https://github.com/rexplore"
+    projectLink="https://github.com/rexplore-ai"
   />
 )
 const footer = (
@@ -93,7 +93,7 @@ const RootLayout: FC<LayoutProps<'/'>> = async ({ children }) => {
           banner={banner}
           navbar={navbar}
           pageMap={pageMap}
-          docsRepositoryBase="https://github.com/rexplore/docs.rexplore.ai"
+          docsRepositoryBase="https://github.com/rexplore-ai/docs.rexplore.ai"
           editLink="Edit this page on GitHub"
           sidebar={{ defaultMenuCollapseLevel: 1 }}
           footer={footer}
