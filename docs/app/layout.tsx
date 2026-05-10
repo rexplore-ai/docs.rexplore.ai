@@ -86,7 +86,17 @@ const RootLayout: FC<LayoutProps<'/'>> = async ({ children }) => {
   const pageMap = await getEnhancedPageMap()
   return (
     <html lang="en" dir="ltr" suppressHydrationWarning>
-      <Head />
+      <Head
+        // Rexplore brand — v2 rust palette. MD3 primary #ffb5a1 (light
+        // shade) and primary-container #b35c44 (deep shade) compute to
+        // hue ≈ 13°. Lightness is tuned per-mode so links read clearly on
+        // both the dark Nextra surface and the light Nextra surface.
+        color={{
+          hue: 13,
+          saturation: { light: 45, dark: 100 },
+          lightness: { light: 48, dark: 82 }
+        }}
+      />
       <body>
         <ChatButton />
         <Layout
